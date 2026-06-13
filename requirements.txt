@@ -1,0 +1,7 @@
+streamlit
+folium
+streamlit-folium
+Pillow
+plotly
+ultralytics
+opencv-python

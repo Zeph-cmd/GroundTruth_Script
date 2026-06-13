@@ -1,0 +1,87 @@
+{
+  "testerId": "DEVELOPER_DEVICE",
+  "deviceModel": "SM-T225N",
+  "tripId": 6,
+  "endTime": "2026-06-07T16:00:00.360Z",
+  "photoCount": 13,
+  "photos": [
+    {
+      "file": "image0001.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:58:25.063Z"
+    },
+    {
+      "file": "image0002.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:58:32.262Z"
+    },
+    {
+      "file": "image0003.jpg",
+      "latitude": 6.6894563,
+      "longitude": -1.6024884,
+      "timestamp": "2026-06-07T15:58:46.078Z"
+    },
+    {
+      "file": "image0004.jpg",
+      "latitude": 6.6894563,
+      "longitude": -1.6024884,
+      "timestamp": "2026-06-07T15:58:53.273Z"
+    },
+    {
+      "file": "image0005.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:00.603Z"
+    },
+    {
+      "file": "image0006.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:07.619Z"
+    },
+    {
+      "file": "image0007.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:15.022Z"
+    },
+    {
+      "file": "image0008.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:22.442Z"
+    },
+    {
+      "file": "image0009.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:29.709Z"
+    },
+    {
+      "file": "image0010.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:37.132Z"
+    },
+    {
+      "file": "image0011.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:44.197Z"
+    },
+    {
+      "file": "image0012.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:51.355Z"
+    },
+    {
+      "file": "image0013.jpg",
+      "latitude": 6.6901256,
+      "longitude": -1.6021852,
+      "timestamp": "2026-06-07T15:59:58.461Z"
+    }
+  ]
+}
