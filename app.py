@@ -1,4 +1,6 @@
+import json
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -6,6 +8,63 @@ import streamlit as st
 from PIL import Image
 import plotly.graph_objects as go
 from streamlit_folium import st_folium
+
+HISTORY_FILE = Path("uploads.json")
+
+
+def _load_upload_history() -> list[dict]:
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except:
+            return []
+    return []
+
+
+def _save_upload_history(history: list[dict]) -> None:
+    HISTORY_FILE.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _log_upload(source_name: str, upload_type: str, trip_names: list[str]) -> None:
+    history = _load_upload_history()
+    now = datetime.now()
+    history.append({
+        "timestamp": now.isoformat(),
+        "source": source_name,
+        "type": upload_type,
+        "trips": trip_names
+    })
+    _save_upload_history(history)
+    # Also write to audit log
+    log_audit_event("upload", f"Uploaded {source_name} ({upload_type})")
+
+
+def _delete_history_entry(index: int) -> None:
+    """Delete a specific history entry and its associated ZIP/trip data"""
+    history = _load_upload_history()
+    if 0 <= index < len(history):
+        entry = history[index]
+        source_name = entry.get("source", "")
+
+        # Find and delete the ZIP file from _incoming/
+        from utils.trip_importer import IMPORTED_ZIPS_DIR
+        if IMPORTED_ZIPS_DIR.exists():
+            for zip_file in IMPORTED_ZIPS_DIR.glob("*.zip"):
+                if zip_file.name == source_name or zip_file.stem == source_name.replace(".zip", ""):
+                    zip_file.unlink()
+                    break
+
+        # Delete extracted trips associated with this ZIP
+        from utils.trip_loader import EXTRACTED_TRIPS_DIR
+        if EXTRACTED_TRIPS_DIR.exists():
+            zip_stem = source_name.replace(".zip", "")
+            for extracted_dir in EXTRACTED_TRIPS_DIR.iterdir():
+                if extracted_dir.is_dir() and extracted_dir.name.startswith(zip_stem):
+                    shutil.rmtree(extracted_dir)
+
+        # Remove the entry from history
+        history.pop(index)
+        _save_upload_history(history)
 
 from utils.analytics import (
     calculate_image_intervals,
@@ -16,9 +75,14 @@ from utils.analytics import (
 from utils.share_export import ShareExportError, export_full_dataset, export_lightweight_package, export_selected_trip, share_file
 from utils.metadata_loader import load_trip_metadata
 from utils.map_loader import build_trip_map, extract_gps_points
+from utils.image_enhancer import get_enhanced_image_path
 from utils.image_loader import get_trip_images
 from utils.trip_loader import get_trip_folders
+from utils.rvtrip import import_rvtrip, RvTripImportResult
+from utils.trip_importer import TripImportError, import_trip_zip
 from utils.yolo_detector import YOLODetectorError, detect_objects
+from utils.audit_logger import log_audit_event, get_audit_logs, clear_audit_logs, verify_audit_password
+from utils.authenticity_checker import compute_trip_authenticity
 
 
 TRIPS_DIR = Path("trips")
@@ -78,6 +142,7 @@ def _extract_timestamp_from_metadata(metadata: dict | None, image_name: str) -> 
                 entry_name = str(
                     entry.get("filename")
                     or entry.get("file_name")
+                    or entry.get("file")
                     or entry.get("name")
                     or entry.get("image")
                     or ""
@@ -113,7 +178,10 @@ def _extract_lat_lon(metadata: dict | None, image_name: str) -> tuple[object | N
         if isinstance(candidate, dict):
             for key, value in candidate.items():
                 if str(key).lower() == normalized_name and isinstance(value, dict):
-                    return value.get("latitude") or value.get("lat"), value.get("longitude") or value.get("lon")
+                    lat = value.get("latitude") or value.get("lat")
+                    lon = value.get("longitude") or value.get("lon")
+                    # Treat 0 as None (invalid GPS)
+                    return (lat if lat and lat != 0 else None), (lon if lon and lon != 0 else None)
 
         if isinstance(candidate, list):
             for entry in candidate:
@@ -123,12 +191,16 @@ def _extract_lat_lon(metadata: dict | None, image_name: str) -> tuple[object | N
                 entry_name = str(
                     entry.get("filename")
                     or entry.get("file_name")
+                    or entry.get("file")
                     or entry.get("name")
                     or entry.get("image")
                     or ""
                 ).lower()
                 if entry_name == normalized_name:
-                    return entry.get("latitude") or entry.get("lat"), entry.get("longitude") or entry.get("lon")
+                    lat = entry.get("latitude") or entry.get("lat")
+                    lon = entry.get("longitude") or entry.get("lon")
+                    # Treat 0 as None (invalid GPS)
+                    return (lat if lat and lat != 0 else None), (lon if lon and lon != 0 else None)
 
     return None, None
 
@@ -143,9 +215,33 @@ def _build_image_records(trip_path: Path, metadata: dict | None) -> list[dict]:
                 "name": image_path.name,
                 "timestamp": timestamp,
                 "timestamp_sort": _parse_datetime(timestamp),
+                "enhanced_path": None,
             }
         )
     return records
+
+
+def _is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+
+
+@st.cache_data(show_spinner=False)
+def _cached_enhanced_image_path(image_path: str, signature: tuple[int, int], enable_realesrgan: bool) -> dict[str, str]:
+    if not enable_realesrgan:
+        return {"path": image_path, "status": "disabled"}
+
+    try:
+        enhanced_path = get_enhanced_image_path(image_path)
+        return {"path": enhanced_path, "status": "enhanced"}
+    except Exception as exc:
+        logger.warning("OpenCV enhancement failed for %s: %s", image_path, exc)
+        return {"path": image_path, "status": "fallback", "message": str(exc)}
+
+
+def _resolve_image_path(record: dict, enable_realesrgan: bool) -> Path:
+    image_path = Path(record["path"])
+    cached_result = _cached_enhanced_image_path(str(image_path), _image_signature(image_path), enable_realesrgan)
+    return Path(cached_result["path"])
 
 
 def _format_value(value: object | None) -> str:
@@ -282,9 +378,12 @@ def _build_time_chart(timestamps: list[datetime], running_counts: list[int]):
 def _build_gps_density_chart(gps_datetimes: list[datetime]):
     figure = go.Figure()
     if gps_datetimes:
+        # Bucket by minute for better resolution
         bucket_counts: dict[str, int] = {}
         for timestamp in gps_datetimes:
-            bucket = timestamp.strftime("%Y-%m-%d %H:00")
+            # Round to nearest minute
+            rounded = timestamp.replace(second=0, microsecond=0)
+            bucket = rounded.strftime("%H:%M")
             bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
 
         ordered_buckets = sorted(bucket_counts.items())
@@ -293,7 +392,7 @@ def _build_gps_density_chart(gps_datetimes: list[datetime]):
         )
     figure.update_layout(
         title="GPS Density Over Time",
-        xaxis_title="Time Bucket",
+        xaxis_title="Time (minute)",
         yaxis_title="GPS Points",
         height=320,
         margin=dict(l=10, r=10, t=40, b=10),
@@ -302,10 +401,10 @@ def _build_gps_density_chart(gps_datetimes: list[datetime]):
 
 
 @st.cache_data(show_spinner=False)
-def _compute_analytics_bundle(metadata: dict, total_images: int) -> dict:
+def _compute_analytics_bundle(metadata: dict, total_images: int, gps_points: list[dict] | None = None) -> dict:
     duration = calculate_trip_duration(metadata)
     intervals = calculate_image_intervals(metadata)
-    movement = estimate_distance_from_gps(metadata)
+    movement = estimate_distance_from_gps(metadata, gps_points)
     gaps = detect_data_gaps(metadata)
     return {
         "duration": duration,
@@ -365,12 +464,245 @@ st.set_page_config(page_title="RoadVision Dataset Explorer", layout="wide")
 st.title("RoadVision Dataset Explorer")
 
 with st.sidebar:
-    trips = get_trip_folders()
-    selected_trip = st.selectbox(
-        "Select Trip",
-        options=trips if trips else ["No trips found"],
-        disabled=not trips,
+    enable_ai_detection = st.radio(
+        "AI Detection",
+        ["Enable AI Detection", "Disable AI Detection"],
+        index=0,
+        help="Toggle YOLO object detection on/off. When disabled, images show without bounding boxes.",
     )
+    ai_detection_enabled = enable_ai_detection == "Enable AI Detection"
+
+    enable_realesrgan = st.checkbox(
+        "Enable image enhancement (Real-ESRGAN)",
+        value=False,
+        help="Enhances each photo with AI upscaling. Slower but sharper. Results are cached.",
+    )
+
+    st.subheader("Import Trip")
+    st.caption("Upload .rvtrip file only.")
+
+    uploaded_rvtrip = st.file_uploader(
+        "Choose a .rvtrip package",
+        type=["rvtrip"],
+        accept_multiple_files=False,
+        label_visibility="collapsed",
+        help="Pick the .rvtrip package from Windows Explorer.",
+    )
+    read_rvtrip_clicked = st.button("Read .rvtrip", disabled=uploaded_rvtrip is None)
+    if read_rvtrip_clicked:
+        try:
+            result = import_rvtrip(uploaded_rvtrip, clear_old=True)
+            _log_upload(uploaded_rvtrip.name, "rvtrip", [])
+            st.session_state.verification_result = result.verification
+            st.session_state.imported_trip_dir = str(result.trip_dir)
+            st.success(f"Imported {result.trip_dir.name}")
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+    trips = get_trip_folders()
+
+    # Show verification banner if .rvtrip was imported
+    if st.session_state.get("verification_result"):
+        verification = st.session_state.verification_result
+        status = verification["status"]
+        
+        if status == "VALID":
+            st.markdown(
+                f"""
+                <div style="background-color:#28a745;padding:20px;border-radius:10px;margin-bottom:20px;">
+                    <h3 style="color:white;margin:0;">✅ Trip Integrity: PASS</h3>
+                    <p style="color:white;margin:10px 0 0 0;">
+                        Files Verified: {verification['files_verified']}<br>
+                        Verification Time: {verification['elapsed']}s<br>
+                        Hash Algorithm: {verification['hash_algorithm'].upper()}
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        elif status == "WARNING":
+            st.markdown(
+                f"""
+                <div style="background-color:#ffc107;padding:20px;border-radius:10px;margin-bottom:20px;">
+                    <h3 style="color:black;margin:0;">⚠️ Trip Integrity: WARNING (read-only)</h3>
+                    <p style="color:black;margin:10px 0 0 0;">
+                        Files Verified: {verification['files_verified']} / {verification['total_files']}<br>
+                        Missing: {len(verification['missing'])} files<br>
+                        Verification Time: {verification['elapsed']}s<br>
+                        Hash Algorithm: {verification['hash_algorithm'].upper()}
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            if verification['missing']:
+                st.markdown("**Missing files:**")
+                for missing_file in verification['missing'][:10]:
+                    st.markdown(f"- {missing_file}")
+                if len(verification['missing']) > 10:
+                    st.markdown(f"- ... and {len(verification['missing']) - 10} more")
+            
+            # Add "Continue Anyway" button for WARNING
+            if not st.session_state.get("verification_override", False):
+                if st.button("Continue Anyway", key="override_warning", help="Override warning and proceed with full analytics"):
+                    st.session_state.verification_override = True
+                    st.rerun()
+            else:
+                st.info("✅ Warning overridden — showing full analytics")
+                if st.button("Revert Override", key="revert_override"):
+                    st.session_state.verification_override = False
+                    st.rerun()
+        elif status == "INVALID":
+            st.markdown(
+                f"""
+                <div style="background-color:#dc3545;padding:20px;border-radius:10px;margin-bottom:20px;">
+                    <h3 style="color:white;margin:0;">❌ Trip Integrity: FAIL</h3>
+                    <p style="color:white;margin:10px 0 0 0;">
+                        Files Verified: {verification['files_verified']} / {verification['total_files']}<br>
+                        Mismatched hashes: {len(verification['mismatches'])} files<br>
+                        Verification Time: {verification['elapsed']}s<br>
+                        Hash Algorithm: {verification['hash_algorithm'].upper()}<br>
+                        <strong>This trip has been modified or corrupted. Analytics and reports are disabled.</strong>
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            if verification['mismatches']:
+                st.markdown("**Modified files:**")
+                for mismatch in verification['mismatches'][:10]:
+                    st.markdown(f"- {mismatch['file']}")
+                if len(verification['mismatches']) > 10:
+                    st.markdown(f"- ... and {len(verification['mismatches']) - 10} more")
+
+    if trips:
+        if st.button("Clear All Trips", help="Remove all trips to upload new content"):
+            TRIPS_DIR.mkdir(parents=True, exist_ok=True)
+            for item in TRIPS_DIR.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            st.session_state.active_trip_path = None
+            st.session_state.pop("gallery_page", None)
+            st.session_state.pop("selected_image_path", None)
+            st.session_state.pop("selected_map_image_path", None)
+            _save_upload_history([])
+            st.rerun()
+
+    # History Section
+    upload_history = _load_upload_history()
+    if upload_history:
+        with st.expander("Upload History", expanded=False):
+            st.caption(f"{len(upload_history)} past upload(s)")
+            for i, entry in enumerate(reversed(upload_history)):
+                ts = entry.get("timestamp", "")
+                try:
+                    formatted_time = datetime.fromisoformat(ts).strftime("%Y-%m-%d %H:%M")
+                except:
+                    formatted_time = ts
+                source = entry.get("source", "Unknown")
+                col_a, col_b = st.columns([4, 1])
+                col_a.text(f"📦 {formatted_time} - {source}")
+                if col_b.button("Delete", key=f"del_hist_{len(upload_history) - 1 - i}"):
+                    _delete_history_entry(len(upload_history) - 1 - i)
+                    st.rerun()
+            if st.button("Clear History", key="clear_history"):
+                _save_upload_history([])
+                log_audit_event("history_clear", "Cleared upload history")
+                st.rerun()
+
+    # Audit Logs Section (password-protected)
+    from utils.audit_logger import get_password, set_password, is_locked, lockout_remaining_seconds, MAX_FAILED_ATTEMPTS, _load_config, record_failed_attempt
+    if st.session_state.get("audit_unlocked", False):
+        with st.expander(" Audit Logs", expanded=True):
+            audit_logs = get_audit_logs()
+            if audit_logs:
+                st.caption(f"{len(audit_logs)} audit event(s)")
+                for log in reversed(audit_logs):
+                    ts = log.get("timestamp", "")
+                    event_type = log.get("event_type", "unknown")
+                    details = log.get("details", "")
+                    st.text(f"🕒 {ts} | {event_type.upper()}: {details}")
+                if st.button("Clear Audit Logs", key="clear_audit"):
+                    clear_audit_logs()
+                    log_audit_event("audit_cleared", "Audit logs cleared")
+                    st.session_state.audit_unlocked = False
+                    st.rerun()
+            else:
+                st.info("No audit events recorded yet.")
+            col_lock, col_pass = st.columns(2)
+            if col_lock.button("🔒 Lock", key="lock_audit"):
+                st.session_state.audit_unlocked = False
+                st.rerun()
+            if col_pass.button(" Change Password", key="change_pass_btn"):
+                st.session_state.show_change_password = True
+                st.rerun()
+
+            if st.session_state.get("show_change_password", False):
+                st.divider()
+                st.markdown("### Change Audit Password")
+                current_pass = st.text_input("Current password", type="password", key="current_pass_for_change")
+                new_pass = st.text_input("New password", type="password", key="new_pass_for_change")
+                confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass_for_change")
+                col_cancel, col_save = st.columns(2)
+                if col_cancel.button("Cancel", key="cancel_pass_change"):
+                    st.session_state.show_change_password = False
+                    st.rerun()
+                if col_save.button("Save New Password", key="save_pass_change"):
+                    if current_pass != get_password():
+                        st.error("Current password is incorrect")
+                        record_failed_attempt()
+                    elif new_pass != confirm_pass:
+                        st.error("New passwords do not match")
+                    elif len(new_pass) < 4:
+                        st.error("Password must be at least 4 characters")
+                    else:
+                        set_password(new_pass)
+                        log_audit_event("password_changed", "Audit log password was changed")
+                        st.session_state.show_change_password = False
+                        st.success("Password changed successfully")
+                        st.rerun()
+    else:
+        with st.expander(" Audit Logs", expanded=False):
+            if is_locked():
+                remaining = lockout_remaining_seconds()
+                mins = remaining // 60
+                secs = remaining % 60
+                st.error(f"Audit logs locked. Try again in {mins}m {secs}s")
+            else:
+                audit_password = st.text_input("Enter password to access audit logs", type="password", key="audit_pass_input")
+                if st.button("Unlock", key="unlock_audit"):
+                    if verify_audit_password(audit_password):
+                        st.session_state.audit_unlocked = True
+                        log_audit_event("audit_unlocked", "Audit logs accessed")
+                        st.rerun()
+                    else:
+                        attempts_left = MAX_FAILED_ATTEMPTS - (_load_config().get("failed_attempts", 0))
+                        st.error(f"Incorrect password. {attempts_left} attempts remaining before lockout.")
+
+    active_trip_path = st.session_state.get("active_trip_path")
+    if active_trip_path is not None:
+        active_trip_path = Path(active_trip_path)
+    if not active_trip_path or active_trip_path not in trips:
+        active_trip_path = trips[0] if trips else None
+    st.session_state.active_trip_path = str(active_trip_path) if active_trip_path is not None else None
+
+    if len(trips) > 1:
+        with st.expander("Switch trip", expanded=False):
+            trip_labels = [trip.name for trip in trips]
+            selected_index = trip_labels.index(active_trip_path.name) if active_trip_path is not None and active_trip_path.name in trip_labels else 0
+            chosen_trip_name = st.radio("Trips", trip_labels, index=selected_index, label_visibility="collapsed")
+            if chosen_trip_name != active_trip_path.name:
+                active_trip_path = trips[trip_labels.index(chosen_trip_name)]
+                st.session_state.active_trip_path = str(active_trip_path)
+                # Reset trip-specific state
+                st.session_state.pop("selected_image_path", None)
+                st.session_state.pop("gallery_page", None)
+                st.session_state.pop("selected_map_image_path", None)
+                st.session_state.pop("map_zoom", None)
+                st.rerun()
 
     if st.button("Refresh"):
         st.rerun()
@@ -381,14 +713,13 @@ st.write("Welcome to RoadVision Dataset Explorer.")
 if not trips:
     st.info("No trips found.\nPlace exported trip folders inside ./trips/")
 else:
-    selected_trip_path = TRIPS_DIR / selected_trip
-    logger.debug("Selected trip folder: %s", selected_trip_path)
+    selected_trip_path = Path(st.session_state.active_trip_path) if st.session_state.active_trip_path else trips[0]
     metadata_result = load_trip_metadata(selected_trip_path)
 
     if metadata_result["status"] == "missing":
-        st.info(metadata_result["error"])
+        st.info("No metadata found for this trip.")
     elif metadata_result["status"] == "invalid_json":
-        st.error(metadata_result["error"])
+        st.error("Trip metadata is corrupted.")
     else:
         image_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
         fallback_total_images = sum(
@@ -397,7 +728,7 @@ else:
             if item.is_file() and item.suffix.lower() in image_extensions
         )
 
-        trip_id = metadata_result["trip_id"] or selected_trip
+        trip_id = metadata_result["trip_id"] or selected_trip_path.name
         start_time = metadata_result["start_time"] or "Not available"
         end_time = metadata_result["end_time"] or "Not available"
         total_images = metadata_result["total_images"]
@@ -412,9 +743,15 @@ else:
 
         image_records = _build_image_records(selected_trip_path, metadata_result.get("metadata"))
         image_path_lookup = {record["name"].lower(): record["path"] for record in image_records}
+        if any(not _is_image_file(record["path"]) for record in image_records):
+            st.warning("Some trip files are metadata JSON files. The gallery previews image files only.")
+        if st.session_state.get("active_trip_path") is None:
+            st.info("No trip loaded yet. Use the sidebar ZIP upload, then press Read ZIP.")
 
-        st.markdown(f"**Selected Trip:** {selected_trip}")
-        st.markdown(f"**Path:** {TRIPS_DIR.as_posix()}/{selected_trip}")
+        if image_records:
+            sample_preview = image_records[0]["path"]
+            if sample_preview.suffix.lower() == ".json":
+                st.warning("JSON files are metadata, not images. The gallery only previews image files.")
 
         st.subheader("Trip Information")
         cards = st.columns(4)
@@ -442,6 +779,23 @@ else:
         else:
             gps_point_lookup = {str(point["filename"]).lower(): point for point in gps_points}
 
+            # Google Maps buttons — both always visible side by side
+            first_point = gps_points[0]
+            map_lat = float(first_point["latitude"])
+            map_lon = float(first_point["longitude"])
+            # !3m1!1e3 = satellite imagery, !3m1!1e2 = standard map
+            imagery_url = f"https://www.google.com/maps/@{map_lat},{map_lon},18z/data=!3m1!1e3"
+            raw_map_url = f"https://www.google.com/maps/@{map_lat},{map_lon},18z/data=!3m1!1e2"
+            gmaps_cols = st.columns(2)
+            gmaps_cols[0].markdown(
+                f'<a href="{imagery_url}" target="_blank" style="display:block;padding:10px 16px;background:#4285F4;color:white;text-decoration:none;border-radius:6px;text-align:center;font-weight:bold;">🛣️ View Imagery</a>',
+                unsafe_allow_html=True,
+            )
+            gmaps_cols[1].markdown(
+                f'<a href="{raw_map_url}" target="_blank" style="display:block;padding:10px 16px;background:#34A853;color:white;text-decoration:none;border-radius:6px;text-align:center;font-weight:bold;">🗺️ View Raw Map</a>',
+                unsafe_allow_html=True,
+            )
+
             map_columns = st.columns(2)
             show_markers = map_columns[0].checkbox("Show markers", value=True)
             show_route = map_columns[1].checkbox("Show route", value=True)
@@ -455,6 +809,11 @@ else:
             if map_result["sampled"]:
                 st.caption(f"Rendering a sampled view for performance. GPS points: {map_result['summary']['total_points']}")
 
+            # Display area/landmark name
+            area_name = map_result["summary"].get("area_name", "Unknown location")
+            if area_name and area_name != "Unknown location":
+                st.success(f"**Trip Location:** {area_name}")
+
             trip_map = map_result["map"]
             if trip_map is None:
                 st.info("No GPS data available")
@@ -462,23 +821,8 @@ else:
                 map_state = st_folium(
                     trip_map,
                     height=500,
-                    key=f"trip_map_{selected_trip}",
-                    returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "last_object_clicked_popup"],
+                    key=f"trip_map_{selected_trip_path.name}",
                 )
-
-                clicked_filename = map_state.get("last_object_clicked_tooltip") if isinstance(map_state, dict) else None
-                if not clicked_filename and isinstance(map_state, dict):
-                    popup_text = map_state.get("last_object_clicked_popup")
-                    if isinstance(popup_text, str) and popup_text:
-                        marker_line = popup_text.split("<br>", 1)[0]
-                        clicked_filename = marker_line.replace("<strong>Filename:</strong>", "").strip() or None
-
-                if clicked_filename:
-                    clicked_record = gps_point_lookup.get(clicked_filename.lower())
-                    if clicked_record is not None:
-                        resolved_path = clicked_record.get("path") or image_path_lookup.get(clicked_record["filename"].lower())
-                        if resolved_path is not None:
-                            st.session_state.selected_map_image_path = str(resolved_path)
 
                 st.markdown("**Trip Summary**")
                 summary_columns = st.columns(4)
@@ -496,89 +840,208 @@ else:
                     f"{end_coordinates[0]:.6f}, {end_coordinates[1]:.6f}" if end_coordinates else "Not available",
                 )
 
-                selected_map_image_value = st.session_state.get("selected_map_image_path")
-                if not selected_map_image_value and gps_points:
-                    first_point = gps_points[0]
-                    fallback_path = first_point.get("path") or image_path_lookup.get(first_point["filename"].lower())
-                    if fallback_path is not None:
-                        st.session_state.selected_map_image_path = str(fallback_path)
-                        selected_map_image_value = st.session_state.selected_map_image_path
-
-                if selected_map_image_value:
-                    selected_map_image_path = Path(selected_map_image_value)
-                    selected_map_point = gps_point_lookup.get(selected_map_image_path.name.lower())
-
-                    if selected_map_point is not None:
-                        st.markdown("**Selected Image**")
-                        image_detail_left, image_detail_right = st.columns([2, 1])
-
-                        with image_detail_left:
-                            try:
-                                annotated_image = _annotate_image(selected_map_image_path, _cached_yolo_detections(str(selected_map_image_path), _image_signature(selected_map_image_path)).get("detections", []))
-                                st.image(annotated_image, use_container_width=True)
-                            except YOLODetectorError as exc:
-                                st.error(str(exc))
-                                try:
-                                    with Image.open(selected_map_image_path) as image_handle:
-                                        st.image(image_handle, use_container_width=True)
-                                except Exception:
-                                    st.error("Unable to load image")
-                            except Exception:
-                                st.error("Unable to load image")
-
-                        with image_detail_right:
-                            st.markdown(f"**Filename:** {selected_map_point['filename']}")
-                            st.markdown(f"**Timestamp:** {_format_value(selected_map_point.get('timestamp'))}")
-                            st.markdown(f"**Latitude:** {_format_value(selected_map_point.get('latitude'))}")
-                            st.markdown(f"**Longitude:** {_format_value(selected_map_point.get('longitude'))}")
-                        _render_ai_detection_results(selected_map_image_path)
+                # Coverage Score section
+                coverage = map_result["summary"].get("coverage")
+                if coverage:
+                    st.markdown("### Coverage Score")
+                    coverage_columns = st.columns(4)
+                    coverage_columns[0].metric("Route length", f"{coverage['route_length_km']:.1f} km")
+                    coverage_columns[1].metric("Captured", f"{coverage['captured_km']:.1f} km")
+                    coverage_columns[2].metric("Coverage", f"{coverage['coverage_pct']:.1f}%")
+                    coverage_columns[3].metric(
+                        "Longest unrecorded gap",
+                        f"{coverage['longest_gap_m']:.0f} m" if coverage['longest_gap_m'] > 0 else "None"
+                    )
 
             st.divider()
             st.subheader("Trip Analytics")
 
-            analytics_bundle = _compute_analytics_bundle(metadata_result.get("metadata", {}), int(total_images))
-            analytics_duration = analytics_bundle["duration"]
-            analytics_intervals = analytics_bundle["intervals"]
-            analytics_movement = analytics_bundle["movement"]
-            analytics_gaps = analytics_bundle["gaps"]
+            # Gate analytics behind verification result (unless override is active)
+            _verification_status = st.session_state.get("verification_result", {}).get("status") if st.session_state.get("verification_result") else None
+            _verification_override = st.session_state.get("verification_override", False)
+            if _verification_status == "INVALID" and not _verification_override:
+                st.error("Trip Analytics disabled: integrity verification failed. This trip has been modified or corrupted.")
+            else:
+                if _verification_status == "WARNING" and not _verification_override:
+                    st.warning("Trip Analytics shown in read-only mode (some files missing).")
+                analytics_bundle = _compute_analytics_bundle(metadata_result.get("metadata", {}), int(total_images), gps_points)
+                analytics_duration = analytics_bundle["duration"]
+                analytics_intervals = analytics_bundle["intervals"]
+                analytics_movement = analytics_bundle["movement"]
+                analytics_gaps = analytics_bundle["gaps"]
 
-            metrics_columns = st.columns(5)
-            metrics_columns[0].metric("Duration", f"{analytics_duration['duration_minutes']:.0f} min")
-            metrics_columns[1].metric("Distance", f"{analytics_movement['distance_km']:.1f} km")
-            metrics_columns[2].metric("Avg Speed", f"{analytics_movement['avg_speed_kmh']:.1f} km/h")
-            metrics_columns[3].metric("Images", str(total_images))
-            metrics_columns[4].metric("Data Quality", f"{analytics_gaps['quality_score']}/100")
+                metrics_columns = st.columns(5)
+                metrics_columns[0].metric("Duration", f"{analytics_duration['duration_minutes']:.0f} min")
+                metrics_columns[1].metric("Distance", f"{analytics_movement['distance_km']:.1f} km")
+                metrics_columns[2].metric("Avg Speed", f"{analytics_movement['avg_speed_kmh']:.1f} km/h")
+                metrics_columns[3].metric("Images", str(total_images))
+                metrics_columns[4].metric("Data Quality", f"{analytics_gaps['quality_score']}/100")
 
-            analytics_timestamps, analytics_running_counts, analytics_gps_datetimes = _build_analytics_chart_data(image_records, gps_points)
-            chart_columns = st.columns(2)
-            chart_columns[0].plotly_chart(_build_time_chart(analytics_timestamps, analytics_running_counts), use_container_width=True)
-            chart_columns[1].plotly_chart(_build_gps_density_chart(analytics_gps_datetimes), use_container_width=True)
+                analytics_timestamps, analytics_running_counts, analytics_gps_datetimes = _build_analytics_chart_data(image_records, gps_points)
+                chart_columns = st.columns(2)
+                chart_columns[0].plotly_chart(_build_time_chart(analytics_timestamps, analytics_running_counts), use_container_width=True)
+                chart_columns[1].plotly_chart(_build_gps_density_chart(analytics_gps_datetimes), use_container_width=True)
 
-            analytics_notes = st.columns(4)
-            analytics_notes[0].metric("Avg interval", f"{analytics_intervals['average_seconds']:.1f} s")
-            analytics_notes[1].metric("Min interval", f"{analytics_intervals['min_seconds']:.1f} s")
-            analytics_notes[2].metric("Max interval", f"{analytics_intervals['max_seconds']:.1f} s")
-            analytics_notes[3].metric("GPS points", str(analytics_movement['gps_points']))
+                # Add two new meaningful charts
+                # Chart 1: Interval variation over time (helps identify pauses/movement changes)
+                if len(analytics_intervals.get("intervals", [])) >= 2:
+                    interval_figure = go.Figure()
+                    interval_figure.add_trace(go.Scatter(
+                        y=analytics_intervals["intervals"],
+                        mode="lines+markers",
+                        name="Interval (seconds)",
+                        line=dict(color="#00E5FF", width=2),
+                        marker=dict(size=6)
+                    ))
+                    interval_figure.update_layout(
+                        title="Photo Interval Variation",
+                        xaxis_title="Photo #",
+                        yaxis_title="Seconds Between Photos",
+                        template="plotly_dark",
+                        height=350
+                    )
+                    interval_figure.update_yaxes(range=[0, max(analytics_intervals["intervals"]) * 1.2])
+                    chart_columns[0].plotly_chart(interval_figure, use_container_width=True)
 
-            if analytics_gaps["missing_gps_points"] or analytics_gaps["missing_timestamps"] or analytics_gaps["irregular_intervals"]:
-                st.caption(
-                    "Data gaps detected: "
-                    f"missing GPS={analytics_gaps['missing_gps_points']}, "
-                    f"missing timestamps={analytics_gaps['missing_timestamps']}, "
-                    f"irregular intervals={analytics_gaps['irregular_intervals']}"
+                # Chart 2: AI Detection Summary (if detections exist)
+                detection_counts = []
+                detection_labels = []
+                for record in image_records:
+                    try:
+                        results = run_detection(record["path"])
+                        if results and len(results) > 0:
+                            detection_counts.append(len(results))
+                            detection_labels.append(record["name"])
+                    except:
+                        pass
+
+                if detection_counts:
+                    detection_figure = go.Figure()
+                    detection_figure.add_trace(go.Bar(
+                        x=detection_labels[:50],  # Show first 50 for readability
+                        y=detection_counts[:50],
+                        marker_color="#00E5FF",
+                        name="Objects Detected"
+                    ))
+                    detection_figure.update_layout(
+                        title="AI Detection Results (First 50 Images)",
+                        xaxis_title="Image Filename",
+                        yaxis_title="Number of Objects",
+                        template="plotly_dark",
+                        height=350,
+                        xaxis_tickangle=-45
+                    )
+                    chart_columns[1].plotly_chart(detection_figure, use_container_width=True)
+
+                analytics_notes = st.columns(4)
+                analytics_notes[0].metric("Avg interval", f"{analytics_intervals['average_seconds']:.1f} s")
+                analytics_notes[1].metric("Min interval", f"{analytics_intervals['min_seconds']:.1f} s")
+                analytics_notes[2].metric("Max interval", f"{analytics_intervals['max_seconds']:.1f} s")
+                analytics_notes[3].metric("GPS points", str(analytics_movement['gps_points']))
+
+                if analytics_gaps["missing_gps_points"] or analytics_gaps["missing_timestamps"] or analytics_gaps["irregular_intervals"]:
+                    st.caption(
+                        "Data gaps detected: "
+                        f"missing GPS={analytics_gaps['missing_gps_points']}, "
+                        f"missing timestamps={analytics_gaps['missing_timestamps']}, "
+                        f"irregular intervals={analytics_gaps['irregular_intervals']}"
+                    )
+                if analytics_movement["gps_points"] == 0:
+                    st.info("No GPS data available")
+
+                # Trip Authenticity Score
+                st.divider()
+                authenticity_result = compute_trip_authenticity(
+                    metadata_result.get("metadata", {}),
+                    [Path(r["path"]) for r in image_records],
+                    gps_points,
                 )
-            if analytics_movement["gps_points"] == 0:
-                st.info("No GPS data available")
+                auth_score = authenticity_result["score"]
+                auth_warnings = authenticity_result["warnings"]
 
-            st.divider()
-            st.subheader("Share & Export")
-            export_columns = st.columns(3)
-            if export_columns[0].button("Export Full Dataset"):
-                _run_share_export("full", selected_trip_path, selected_trip, metadata_result.get("metadata", {}), image_records, analytics_bundle)
-            if export_columns[1].button("Export Selected Trip"):
-                _run_share_export("selected", selected_trip_path, selected_trip, metadata_result.get("metadata", {}), image_records, analytics_bundle)
-            if export_columns[2].button("Export Lightweight Package"):
-                _run_share_export("lightweight", selected_trip_path, selected_trip, metadata_result.get("metadata", {}), image_records, analytics_bundle)
+                # Color-code the score
+                if auth_score >= 90:
+                    score_color = "green"
+                    score_icon = "✅"
+                elif auth_score >= 70:
+                    score_color = "yellow"
+                    score_icon = "⚠️"
+                else:
+                    score_color = "red"
+                    score_icon = ""
+
+                st.markdown(f"### {score_icon} Trip Authenticity: {auth_score}%")
+                
+                if auth_score >= 90:
+                    st.success("Trip data appears authentic with minimal issues.")
+                elif auth_score >= 70:
+                    st.warning("Trip has some suspicious patterns. Review warnings below.")
+                else:
+                    st.error("Trip has significant authenticity concerns.")
+
+                if auth_warnings:
+                    st.markdown("**Warnings:**")
+                    for warning in auth_warnings:
+                        st.markdown(f"- {warning}")
+                else:
+                    st.markdown("*No warnings*")
+
+                with st.expander("Detailed Analysis", expanded=False):
+                    details = authenticity_result["details"]
+                    
+                    st.markdown("**Metadata Integrity:**")
+                    meta_details = details.get("metadata", {})
+                    if meta_details.get("image_count_match", False):
+                        st.markdown("- ✅ Image count matches metadata")
+                    else:
+                        st.markdown(f"- ❌ Image count mismatch")
+                    if meta_details.get("metadata_complete", False):
+                        st.markdown("- ✅ All required metadata fields present")
+                    else:
+                        missing = meta_details.get("missing_fields", [])
+                        st.markdown(f"- ❌ Missing fields: {', '.join(missing)}")
+                    
+                    st.markdown("**GPS Consistency:**")
+                    gps_details = details.get("gps", {})
+                    unexplained_gaps = gps_details.get("unexplained_gaps", 0)
+                    st.markdown(f"- {unexplained_gaps} unexplained gap(s)")
+                    speed_anomalies = gps_details.get("speed_anomalies", 0)
+                    st.markdown(f"- {speed_anomalies} impossible speed anomaly(ies)")
+                    if gps_details.get("coordinate_diversity", True):
+                        st.markdown("- ✅ Good coordinate diversity")
+                    else:
+                        st.markdown("- ⚠️ Low coordinate diversity")
+                    
+                    st.markdown("**Temporal Consistency:**")
+                    temporal_details = details.get("temporal", {})
+                    future_ts = temporal_details.get("future_timestamps", 0)
+                    st.markdown(f"- {future_ts} future timestamp(s)")
+                    regularity = temporal_details.get("interval_regularity", "unknown")
+                    st.markdown(f"- Interval regularity: {regularity}")
+                    
+                    st.markdown("**File Integrity:**")
+                    file_details = details.get("files", {})
+                    duplicates = file_details.get("duplicate_files", 0)
+                    st.markdown(f"- {duplicates} duplicate file(s)")
+                    if file_details.get("file_naming_consistent", False):
+                        st.markdown("- ✅ Consistent file format")
+                    else:
+                        st.markdown("- ⚠️ Mixed file formats")
+
+                st.divider()
+                st.subheader("Share & Export")
+                # Gate share/export behind verification (unless override is active)
+                if _verification_status in ("WARNING", "INVALID") and not _verification_override:
+                    st.warning("Share & Export disabled: trip integrity check failed.")
+                else:
+                    _selected_trip_name = metadata_result.get("trip_id") or selected_trip_path.name
+                    export_columns = st.columns(3)
+                    if export_columns[0].button("Export Full Dataset"):
+                        _run_share_export("full", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
+                    if export_columns[1].button("Export Selected Trip"):
+                        _run_share_export("selected", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
+                    if export_columns[2].button("Export Lightweight Package"):
+                        _run_share_export("lightweight", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
 
         st.divider()
         st.subheader("Gallery")
@@ -633,7 +1096,8 @@ else:
                 for column, record in zip(row_columns, row_records):
                     with column:
                         try:
-                            preview_bytes = _load_preview_bytes(str(record["path"]))
+                            preview_path = _resolve_image_path(record, enable_realesrgan)
+                            preview_bytes = _load_preview_bytes(str(preview_path))
                             st.image(preview_bytes, use_container_width=True)
                         except Exception:
                             st.error("Unable to load image")
@@ -668,12 +1132,22 @@ else:
 
                     with detail_left:
                         try:
-                            annotated_image = _annotate_image(detail_record["path"], _cached_yolo_detections(str(detail_record["path"]), _image_signature(detail_record["path"])).get("detections", []))
-                            st.image(annotated_image, use_container_width=True)
+                            if enable_realesrgan:
+                                with st.spinner("Enhancing image with Real-ESRGAN..."):
+                                    detail_processing_path = _resolve_image_path(detail_record, enable_realesrgan)
+                            else:
+                                detail_processing_path = _resolve_image_path(detail_record, enable_realesrgan)
+                            
+                            if ai_detection_enabled:
+                                annotated_image = _annotate_image(detail_processing_path, _cached_yolo_detections(str(detail_processing_path), _image_signature(detail_processing_path)).get("detections", []))
+                                st.image(annotated_image, use_container_width=True)
+                            else:
+                                with Image.open(detail_processing_path) as image_handle:
+                                    st.image(image_handle, use_container_width=True)
                         except YOLODetectorError as exc:
                             st.error(str(exc))
                             try:
-                                with Image.open(detail_record["path"]) as image_handle:
+                                with Image.open(_resolve_image_path(detail_record, enable_realesrgan)) as image_handle:
                                     st.image(image_handle, use_container_width=True)
                             except Exception:
                                 st.error("Unable to load image")
@@ -687,4 +1161,24 @@ else:
                         st.markdown(f"**Timestamp:** {_format_value(detail_timestamp)}")
                         st.markdown(f"**Latitude:** {_format_value(latitude)}")
                         st.markdown(f"**Longitude:** {_format_value(longitude)}")
-                        _render_ai_detection_results(detail_record["path"])
+
+                        if latitude is not None and longitude is not None:
+                            try:
+                                lat_val = float(latitude)
+                                lon_val = float(longitude)
+                                detail_imagery_url = f"https://www.google.com/maps/@{lat_val},{lon_val},18z/data=!3m1!1e3"
+                                detail_raw_url = f"https://www.google.com/maps/@{lat_val},{lon_val},18z"
+                                detail_gmaps_cols = st.columns(2)
+                                detail_gmaps_cols[0].markdown(
+                                    f'<a href="{detail_imagery_url}" target="_blank" style="display:block;padding:6px 10px;background:#4285F4;color:white;text-decoration:none;border-radius:4px;text-align:center;font-size:13px;font-weight:bold;">🛣️ View Imagery</a>',
+                                    unsafe_allow_html=True,
+                                )
+                                detail_gmaps_cols[1].markdown(
+                                    f'<a href="{detail_raw_url}" target="_blank" style="display:block;padding:6px 10px;background:#34A853;color:white;text-decoration:none;border-radius:4px;text-align:center;font-size:13px;font-weight:bold;">️ View Raw Map</a>',
+                                    unsafe_allow_html=True,
+                                )
+                            except (ValueError, TypeError):
+                                pass
+
+                        if ai_detection_enabled:
+                            _render_ai_detection_results(detail_record["path"])

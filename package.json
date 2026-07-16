@@ -1,0 +1,10 @@
+{
+  "name": "roadvision",
+  "version": "1.0.0",
+  "description": "RoadVision Dataset Explorer - Streamlit app",
+  "scripts": {
+    "start": ".venv310\\Scripts\\streamlit.exe run app.py",
+    "dev": ".venv310\\Scripts\\streamlit.exe run app.py --server.port 8501"
+  },
+  "private": true
+}

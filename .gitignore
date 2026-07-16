@@ -1,0 +1,89 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Byte-compiled / optimized
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+.venv310/
+venv/
+env/
+ENV/
+
+# ===== Streamlit =====
+.streamlit/secrets.toml
+
+# ===== Environment / secrets =====
+.env
+.env.*
+*.secret
+*.key
+
+# ===== Project runtime / caches =====
+cache/
+.cache/
+uploads.json
+audit_log.json
+exports/
+trips/_incoming/
+trips/.extracted_rv/
+
+# Keep source trip data structure but ignore generated content
+# (remove the next line if you DO want trip images/metadata committed)
+trips/*/image*.jpg
+trips/*/metadata*.json
+
+# ===== Logs =====
+*.log
+logs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ===== IDE / Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== OS junk =====
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== Type checkers / linters =====
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.tox/

@@ -25,6 +25,9 @@ def _coerce_float(value: Any) -> float | None:
 
     if number != number or number in (float("inf"), float("-inf")):
         return None
+    # Treat 0 as invalid GPS (coordinates in Gulf of Guinea)
+    if number == 0.0:
+        return None
     return number
 
 
@@ -53,7 +56,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 def _collect_image_records(data: Any, records: list[dict[str, Any]]) -> None:
     if isinstance(data, dict):
-        filename = _first_present(data, ["filename", "file_name", "name", "image"])
+        filename = _first_present(data, ["filename", "file_name", "file", "name", "image"])
         latitude = _coerce_float(_first_present(data, ["latitude", "lat", "gps_latitude"]))
         longitude = _coerce_float(_first_present(data, ["longitude", "lon", "lng", "gps_longitude"]))
         timestamp = _first_present(data, ["timestamp", "time", "datetime", "captured_at"])
@@ -168,17 +171,27 @@ def calculate_image_intervals(metadata: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def estimate_distance_from_gps(metadata: dict[str, Any]) -> dict[str, Any]:
-    records: list[dict[str, Any]] = []
-    _collect_image_records(metadata, records)
-    records = _dedupe_records(records)
-    gps_points = _valid_gps_points(records)
+def estimate_distance_from_gps(metadata: dict[str, Any], gps_points: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Calculate distance and speed from GPS points."""
+    if gps_points is None:
+        # Fallback: extract from metadata
+        records: list[dict[str, Any]] = []
+        _collect_image_records(metadata, records)
+        records = _dedupe_records(records)
+        gps_points_raw = _valid_gps_points(records)
+        gps_points = [{"latitude": lat, "longitude": lon} for lat, lon in gps_points_raw]
 
     if len(gps_points) < 2:
         return {"distance_km": 0.0, "avg_speed_kmh": 0.0, "gps_points": len(gps_points)}
 
+    # Calculate total distance
     distance_km = 0.0
-    for (first_lat, first_lon), (second_lat, second_lon) in zip(gps_points, gps_points[1:]):
+    for i in range(len(gps_points) - 1):
+        first_lat = float(gps_points[i]["latitude"])
+        first_lon = float(gps_points[i]["longitude"])
+        second_lat = float(gps_points[i + 1]["latitude"])
+        second_lon = float(gps_points[i + 1]["longitude"])
+        
         radius_km = 6371.0
         lat1 = radians(first_lat)
         lon1 = radians(first_lon)
@@ -189,12 +202,25 @@ def estimate_distance_from_gps(metadata: dict[str, Any]) -> dict[str, Any]:
         a = sin(delta_lat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(delta_lon / 2) ** 2
         distance_km += 2 * radius_km * atan2(sqrt(a), sqrt(1 - a))
 
-    duration = calculate_trip_duration(metadata)
-    duration_hours = max(duration["duration_minutes"] / 60.0, 1e-6)
-    avg_speed_kmh = distance_km / duration_hours
+    # Calculate duration from timestamps
+    timestamps = []
+    for point in gps_points:
+        ts = point.get("timestamp")
+        if ts:
+            parsed = _parse_timestamp(ts)
+            if parsed:
+                timestamps.append(parsed)
+    
+    if len(timestamps) >= 2:
+        timestamps.sort()
+        duration_seconds = (timestamps[-1] - timestamps[0]).total_seconds()
+        duration_hours = max(duration_seconds / 3600.0, 1e-6)
+        avg_speed_kmh = distance_km / duration_hours
+    else:
+        avg_speed_kmh = 0.0
 
     return {
-        "distance_km": round(distance_km, 2),
+        "distance_km": round(distance_km, 3),
         "avg_speed_kmh": round(avg_speed_kmh, 2),
         "gps_points": len(gps_points),
     }

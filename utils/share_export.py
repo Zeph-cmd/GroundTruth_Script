@@ -258,6 +258,10 @@ def _trip_analytics_export(trip_id: str, trip_path: Path, metadata: dict[str, An
         detect_data_gaps,
         estimate_distance_from_gps,
     )
+    from utils.map_loader import extract_gps_points, _compute_coverage
+
+    gps_points = extract_gps_points(metadata, trip_path)
+    coverage = _compute_coverage(gps_points)
 
     return {
         "trip_id": trip_id,
@@ -266,6 +270,7 @@ def _trip_analytics_export(trip_id: str, trip_path: Path, metadata: dict[str, An
         "intervals": calculate_image_intervals(metadata),
         "movement": estimate_distance_from_gps(metadata),
         "data_gaps": detect_data_gaps(metadata),
+        "coverage": coverage,
     }
 
 
@@ -274,7 +279,41 @@ def export_full_dataset(trips_root: str | Path, dataset_name: str = "RoadVision_
     if not root_path.exists():
         raise ShareExportError("missing files")
 
-    trip_paths = sorted(item for item in root_path.iterdir() if item.is_dir())
+    # Find all trip directories with metadata.json and images
+    trip_paths = []
+    seen = set()
+    
+    for metadata_file in root_path.rglob("metadata.json"):
+        trip_dir = metadata_file.parent
+        # Skip temp/incoming folders only
+        if '_incoming' in trip_dir.parts or 'temp' in trip_dir.parts:
+            continue
+        # Check if this directory has any images (search recursively)
+        image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff'}
+        has_images = any(
+            f.suffix.lower() in image_extensions 
+            for f in trip_dir.rglob("*") 
+            if f.is_file()
+        )
+        if has_images and trip_dir not in seen:
+            trip_paths.append(trip_dir)
+            seen.add(trip_dir)
+    
+    # Also check direct subdirectories (legacy support)
+    for item in root_path.iterdir():
+        if item.is_dir() and (item / "metadata.json").exists() and item not in seen:
+            image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff'}
+            has_images = any(
+                f.suffix.lower() in image_extensions 
+                for f in item.rglob("*") 
+                if f.is_file()
+            )
+            if has_images:
+                trip_paths.append(item)
+                seen.add(item)
+    
+    trip_paths = sorted(trip_paths, key=lambda p: p.as_posix().lower())
+    
     if not trip_paths:
         raise ShareExportError("empty trips")
 

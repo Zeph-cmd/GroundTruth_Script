@@ -17,14 +17,35 @@ def _first_present(data: dict, keys: list[str]) -> object | None:
 
 
 def _normalize_trip_metadata(data: dict) -> dict:
+    photos = data.get("photos") or data.get("images") or data.get("frames") or data.get("records") or []
+    photo_list = photos if isinstance(photos, list) else []
+
+    first_ts = None
+    last_ts = None
+    has_gps = False
+
+    for entry in photo_list:
+        if not isinstance(entry, dict):
+            continue
+        ts = entry.get("timestamp") or entry.get("time") or entry.get("datetime")
+        if ts:
+            if first_ts is None:
+                first_ts = ts
+            last_ts = ts
+        lat = entry.get("latitude")
+        lon = entry.get("longitude")
+        # Treat 0 as "no GPS" since lat/lon of exactly 0 is invalid (Gulf of Guinea)
+        if lat is not None and lon is not None and lat != 0 and lon != 0:
+            has_gps = True
+
     return {
         "trip_id": _first_present(data, ["trip_id", "tripId", "id", "trip"]),
-        "start_time": _first_present(data, ["start_time", "startTime", "start", "trip_start_time"]),
-        "end_time": _first_present(data, ["end_time", "endTime", "end", "trip_end_time"]),
-        "total_images": _first_present(data, ["total_images", "totalImages", "image_count", "images", "count"]),
-        "first_timestamp": _first_present(data, ["first_timestamp", "firstTimestamp", "photo_first_timestamp"]),
-        "last_timestamp": _first_present(data, ["last_timestamp", "lastTimestamp", "photo_last_timestamp"]),
-        "gps_available": _first_present(data, ["gps_available", "gpsAvailable", "gps", "has_gps"]),
+        "start_time": _first_present(data, ["start_time", "startTime", "start", "trip_start_time"]) or first_ts,
+        "end_time": _first_present(data, ["end_time", "endTime", "end", "trip_end_time"]) or last_ts,
+        "total_images": _first_present(data, ["total_images", "totalImages", "image_count", "images", "count", "photoCount"]),
+        "first_timestamp": _first_present(data, ["first_timestamp", "firstTimestamp", "photo_first_timestamp"]) or first_ts,
+        "last_timestamp": _first_present(data, ["last_timestamp", "lastTimestamp", "photo_last_timestamp"]) or last_ts,
+        "gps_available": _first_present(data, ["gps_available", "gpsAvailable", "gps", "has_gps"]) or has_gps,
     }
 
 

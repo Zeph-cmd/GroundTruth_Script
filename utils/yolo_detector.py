@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-MODEL_NAME = "yolov8n.pt"
+MODEL_NAME = "yolov8m.pt"
 
 
 class YOLODetectorError(RuntimeError):

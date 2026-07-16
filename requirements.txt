@@ -1,7 +1,19 @@
-streamlit
-folium
-streamlit-folium
-Pillow
-plotly
-ultralytics
-opencv-python
+# RoadVision Dataset Explorer - Dependencies
+# Install with: pip install -r requirements.txt
+
+# Web Interface
+streamlit>=1.50.0
+streamlit-folium>=0.15.0
+
+# Image Processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# AI / Object Detection
+ultralytics>=8.0.0
+
+# Data & Charts
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.15.0
+folium>=0.15.0

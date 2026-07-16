@@ -6,9 +6,88 @@ import math
 from pathlib import Path
 from typing import Any
 
+import json
+import urllib.request
+import urllib.error
 import folium
+from functools import lru_cache
 
 from utils.image_loader import get_trip_images
+
+
+@lru_cache(maxsize=100)
+def reverse_geocode(latitude: float, longitude: float) -> str:
+    """Get comprehensive area/landmark name from GPS coordinates using Nominatim"""
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={latitude}&lon={longitude}&format=json&zoom=16"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "RoadVision/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            address = data.get("address", {})
+
+            # Build a comprehensive location string with multiple levels
+            parts = []
+
+            # Specific location (road, suburb, neighbourhood)
+            specific = (
+                address.get("road") or
+                address.get("suburb") or
+                address.get("neighbourhood") or
+                address.get("quarter")
+            )
+            if specific:
+                parts.append(specific)
+
+            # City/town level
+            city = (
+                address.get("city") or
+                address.get("town") or
+                address.get("village") or
+                address.get("hamlet")
+            )
+            if city:
+                parts.append(city)
+
+            # District/municipal/metropolitan level
+            district = (
+                address.get("district") or
+                address.get("municipality") or
+                address.get("municipal_district") or
+                address.get("metropolitan_area") or
+                address.get("county")
+            )
+            if district:
+                parts.append(district)
+
+            # Region/state level
+            region = (
+                address.get("state") or
+                address.get("region") or
+                address.get("province")
+            )
+            if region:
+                parts.append(region)
+
+            # Country
+            country = address.get("country")
+            if country:
+                parts.append(country)
+
+            if parts:
+                return ", ".join(parts)
+
+            # Fallback to display name (truncated)
+            display_name = data.get("display_name", "")
+            if display_name:
+                # Take the first 4 meaningful parts
+                parts = [p.strip() for p in display_name.split(",")[:4]]
+                return ", ".join(parts)
+    except Exception:
+        pass
+    return "Unknown location"
 
 
 @dataclass(frozen=True)
@@ -39,6 +118,10 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
     if not math.isfinite(number):
+        return None
+
+    # Treat 0 as invalid GPS (coordinates in the Gulf of Guinea)
+    if number == 0.0:
         return None
 
     return number
@@ -90,7 +173,7 @@ def _extract_points_from_object(data: Any, image_lookup: dict[str, Path], points
     if isinstance(data, dict):
         latitude = _coerce_float(_first_present(data, ["latitude", "lat", "gps_latitude", "y"]))
         longitude = _coerce_float(_first_present(data, ["longitude", "lon", "lng", "gps_longitude", "x"]))
-        filename = _first_present(data, ["filename", "file_name", "name", "image", "path"])
+        filename = _first_present(data, ["filename", "file_name", "file", "name", "image", "path"])
 
         if filename is not None:
             filename_text = str(filename).strip()
@@ -163,6 +246,58 @@ def _estimate_distance_km(points: list[dict[str, Any]]) -> float:
             float(current["longitude"]),
         )
     return distance
+
+
+def _compute_coverage(ordered_points: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compute route coverage score: how much of the route was actually recorded."""
+    if len(ordered_points) < 2:
+        return {
+            "route_length_km": 0.0,
+            "captured_km": 0.0,
+            "coverage_pct": 100.0 if len(ordered_points) == 1 else 0.0,
+            "longest_gap_m": 0.0,
+        }
+
+    # Compute segment distances between consecutive GPS points
+    segment_distances = []
+    for previous, current in zip(ordered_points, ordered_points[1:]):
+        dist = _haversine_km(
+            float(previous["latitude"]),
+            float(previous["longitude"]),
+            float(current["latitude"]),
+            float(current["longitude"]),
+        )
+        segment_distances.append(dist)
+
+    route_length_km = sum(segment_distances)
+    if route_length_km == 0:
+        return {
+            "route_length_km": 0.0,
+            "captured_km": 0.0,
+            "coverage_pct": 100.0,
+            "longest_gap_m": 0.0,
+        }
+
+    # Determine what counts as an "unrecorded gap".
+    # Use the median segment distance as baseline for normal photo spacing.
+    # Segments significantly larger than the median are considered gaps.
+    sorted_dists = sorted(segment_distances)
+    median_dist_km = sorted_dists[len(sorted_dists) // 2]
+    # A gap is any segment > 3x the median spacing (or > 100m absolute minimum)
+    gap_threshold_km = max(median_dist_km * 3, 0.1)
+
+    gap_distances_km = [d for d in segment_distances if d > gap_threshold_km]
+    unrecorded_km = sum(gap_distances_km)
+    captured_km = route_length_km - unrecorded_km
+    coverage_pct = (captured_km / route_length_km) * 100
+    longest_gap_m = (max(gap_distances_km) * 1000) if gap_distances_km else 0.0
+
+    return {
+        "route_length_km": round(route_length_km, 1),
+        "captured_km": round(max(captured_km, 0), 1),
+        "coverage_pct": round(coverage_pct, 1),
+        "longest_gap_m": round(longest_gap_m, 0),
+    }
 
 
 def build_trip_map(
@@ -240,17 +375,54 @@ def build_trip_map(
             ).add_to(marker_group)
         marker_group.add_to(map_object)
 
+    # Add start and end markers with offset to prevent overlap
+    start_point = ordered_points[0]
+    end_point = ordered_points[-1]
+    start_lat, start_lon = float(start_point["latitude"]), float(start_point["longitude"])
+    end_lat, end_lon = float(end_point["latitude"]), float(end_point["longitude"])
+
+    if len(ordered_points) > 1:
+        # Offset markers slightly to prevent overlap
+        offset = 0.0001
+        start_marker_lat = start_lat - offset
+        start_marker_lon = start_lon - offset
+
+        end_marker_lat = end_lat + offset
+        end_marker_lon = end_lon + offset
+
+        folium.Marker(
+            location=[start_marker_lat, start_marker_lon],
+            tooltip="Start",
+            popup=folium.Popup(f"<strong>Start:</strong> {start_point['filename']}", max_width=320),
+            icon=folium.Icon(color="green", icon="play", prefix="fa"),
+        ).add_to(map_object)
+
+        folium.Marker(
+            location=[end_marker_lat, end_marker_lon],
+            tooltip="End",
+            popup=folium.Popup(f"<strong>End:</strong> {end_point['filename']}", max_width=320),
+            icon=folium.Icon(color="red", icon="stop", prefix="fa"),
+        ).add_to(map_object)
+
     bounds = [
         [min(float(point["latitude"]) for point in ordered_points), min(float(point["longitude"]) for point in ordered_points)],
         [max(float(point["latitude"]) for point in ordered_points), max(float(point["longitude"]) for point in ordered_points)],
     ]
     map_object.fit_bounds(bounds)
 
+    # Get area name from start coordinates
+    area_name = reverse_geocode(start_lat, start_lon)
+
+    # Compute coverage metrics
+    coverage = _compute_coverage(ordered_points)
+
     summary = {
         "total_points": len(ordered_points),
         "estimated_distance_km": round(_estimate_distance_km(ordered_points), 2),
-        "start_coordinates": (float(ordered_points[0]["latitude"]), float(ordered_points[0]["longitude"])),
-        "end_coordinates": (float(ordered_points[-1]["latitude"]), float(ordered_points[-1]["longitude"])),
+        "start_coordinates": (start_lat, start_lon),
+        "end_coordinates": (end_lat, end_lon),
+        "area_name": area_name,
+        "coverage": coverage,
     }
 
     return {

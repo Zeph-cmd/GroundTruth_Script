@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 
 
 def get_trip_images(path: str | Path) -> list[Path]:
