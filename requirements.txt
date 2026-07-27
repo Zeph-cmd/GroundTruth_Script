@@ -1,4 +1,4 @@
-# RoadVision Dataset Explorer - Dependencies
+# GroundTruth Dataset Explorer - Dependencies
 # Install with: pip install -r requirements.txt
 
 # Web Interface

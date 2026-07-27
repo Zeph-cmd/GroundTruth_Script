@@ -40,6 +40,18 @@ ENV/
 *.secret
 *.key
 
+# ===== Licensing (PRIVATE - never commit) =====
+access_codes.txt
+.lic
+*.lic
+.used_codes
+
+# ===== PyInstaller / frozen build =====
+dist/
+build/
+*.spec.bak
+RoadVision.exe
+
 # ===== Project runtime / caches =====
 cache/
 .cache/

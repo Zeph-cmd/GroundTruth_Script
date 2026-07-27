@@ -100,7 +100,7 @@ def _ensure_trip_ready(trip_path: str | Path, metadata: dict[str, Any] | None, i
 
 
 def _trip_export_name(trip_id: str) -> str:
-    return f"RoadVision_{_slugify(trip_id)}.zip"
+    return f"GroundTruth_{_slugify(trip_id)}.zip"
 
 
 def _emit_progress(progress_callback: ProgressCallback | None, message: str) -> None:
@@ -172,7 +172,7 @@ def export_selected_trip(
     zip_path = EXPORTS_DIR / _trip_export_name(trip_id)
     bundle_payload = _build_trip_payload(trip_id, selected_trip_path, metadata_dict, image_records, analytics_bundle or {})
 
-    with tempfile.TemporaryDirectory(prefix="roadvision_export_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="groundtruth_export_") as temp_dir:
         _emit_progress(progress_callback, "Preparing files...")
         temp_root = Path(temp_dir)
         trip_root = _write_trip_bundle(selected_trip_path, temp_root, metadata_dict, image_records, analytics_bundle or {}, lightweight=False)
@@ -211,7 +211,7 @@ def export_lightweight_package(
 
     zip_path = EXPORTS_DIR / _trip_export_name(trip_id)
 
-    with tempfile.TemporaryDirectory(prefix="roadvision_lightweight_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="groundtruth_lightweight_") as temp_dir:
         _emit_progress(progress_callback, "Preparing files...")
         temp_root = Path(temp_dir)
         trip_root = _write_trip_bundle(selected_trip_path, temp_root, metadata_dict, image_records, analytics_bundle or {}, lightweight=True)
@@ -274,7 +274,7 @@ def _trip_analytics_export(trip_id: str, trip_path: Path, metadata: dict[str, An
     }
 
 
-def export_full_dataset(trips_root: str | Path, dataset_name: str = "RoadVision_Dataset", progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
+def export_full_dataset(trips_root: str | Path, dataset_name: str = "GroundTruth_Dataset", progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
     root_path = Path(trips_root)
     if not root_path.exists():
         raise ShareExportError("missing files")
@@ -322,7 +322,7 @@ def export_full_dataset(trips_root: str | Path, dataset_name: str = "RoadVision_
 
     before_bytes = 0
     _emit_progress(progress_callback, "Preparing files...")
-    with tempfile.TemporaryDirectory(prefix="roadvision_full_dataset_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="groundtruth_full_dataset_") as temp_dir:
         temp_root = Path(temp_dir)
         dataset_root = temp_root / _slugify(dataset_name)
         dataset_root.mkdir(parents=True, exist_ok=True)

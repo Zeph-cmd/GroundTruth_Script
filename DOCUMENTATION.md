@@ -1,8 +1,8 @@
-# RoadVision Dataset Explorer - Complete Documentation
+# GroundTruth Dataset Explorer - Complete Documentation
 
 ## Executive Summary
 
-RoadVision is a dual-application system for road condition data collection and analysis. It consists of:
+GroundTruth is a dual-application system for road condition data collection and analysis. It consists of:
 1. **Mobile/Companion App**: Collects road data (photos, GPS, video) and exports as `.rvtrip` packages
 2. **Desktop Explorer**: Imports, verifies, analyzes, and exports trip data for decision-makers
 
@@ -16,7 +16,7 @@ This document covers the **Desktop Explorer** (this codebase).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              RoadVision Explorer                             │
+│                              GroundTruth Explorer                             │
 └─────────────────────────────────────────────────────────────────────────────
 
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
@@ -412,7 +412,7 @@ gaps = intervals > gap_threshold
 
 **Export Structure**:
 ```
-RoadVision_Trip_001.zip
+GroundTruth_Trip_001.zip
 ├── metadata.json
 ── analytics.json
 └── images/

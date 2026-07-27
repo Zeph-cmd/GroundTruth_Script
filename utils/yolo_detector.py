@@ -1,11 +1,52 @@
 from __future__ import annotations
 
+import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 
 MODEL_NAME = "yolov8m.pt"
+
+
+def _resolve_model_path() -> str:
+    """
+    Resolve the YOLO model file, accounting for:
+      - Running from source (cwd)
+      - Running from a PyInstaller --onefile frozen exe (sys._MEIPASS)
+      - Persistent user data dir (APPDATA after launcher chdir)
+    """
+    # 1) Explicit override
+    env_path = os.environ.get("GROUNDTRUTH_MODEL_PATH")
+    if env_path and Path(env_path).exists():
+        return env_path
+
+    # 2) Frozen exe: model bundled into _MEIPASS root
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates = [
+                Path(meipass) / MODEL_NAME,
+                Path(meipass) / "weights" / MODEL_NAME,
+            ]
+            for c in candidates:
+                if c.exists():
+                    return str(c)
+
+    # 3) Next to this file (source tree)
+    here = Path(__file__).resolve().parent
+    local = here / MODEL_NAME
+    if local.exists():
+        return str(local)
+
+    # 4) CWD (original behavior)
+    cwd_model = Path.cwd() / MODEL_NAME
+    if cwd_model.exists():
+        return str(cwd_model)
+
+    # 5) Fallback to name (lets ultralytics download it)
+    return MODEL_NAME
 
 
 class YOLODetectorError(RuntimeError):
@@ -22,7 +63,7 @@ def load_model():
         ) from exc
 
     try:
-        return YOLO(MODEL_NAME)
+        return YOLO(_resolve_model_path())
     except Exception as exc:  # pragma: no cover - model download/runtime path is environment dependent
         raise YOLODetectorError(
             "Unable to load YOLOv8 pretrained weights. Check network access or local model availability."

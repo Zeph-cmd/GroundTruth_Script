@@ -11,7 +11,7 @@ DETECTION_LABELS = ("pothole", "crack", "flood", "road_sign")
 
 @dataclass
 class MockRoadObjectDetector:
-    seed_prefix: str = "roadvision"
+    seed_prefix: str = "groundtruth"
 
     def predict(self, image: Any) -> dict[str, float]:
         image_key = getattr(image, "name", None) or str(image)

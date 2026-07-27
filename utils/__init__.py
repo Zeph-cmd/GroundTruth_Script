@@ -1,1 +1,1 @@
-"""Utility package for RoadVision trip loading."""
+"""Utility package for GroundTruth trip loading."""

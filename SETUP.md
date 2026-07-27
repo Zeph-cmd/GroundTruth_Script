@@ -1,4 +1,4 @@
-# RoadVision Dataset Explorer - Setup Guide for Buyers
+# GroundTruth Dataset Explorer - Setup Guide for Buyers
 
 ## Quick Start (5 minutes)
 
@@ -11,13 +11,13 @@ During installation:
 - ✅ Check "Add Python to PATH"
 - ✅ Check "Install pip"
 
-### 2. Download RoadVision
-Extract the `roadvision_script` folder to your desired location (e.g., `C:\RoadVision\`)
+### 2. Download GroundTruth
+Extract the `GroundTruth_script` folder to your desired location (e.g., `C:\GroundTruth\`)
 
 ### 3. Install Dependencies
 Open Command Prompt and run:
 ```bash
-cd C:\RoadVision\roadvision_script
+cd C:\GroundTruth\GroundTruth_script
 pip install -r requirements.txt
 ```
 
@@ -99,9 +99,9 @@ Your browser will open automatically to `http://localhost:8501`
 
 ## Android Companion App (Optional)
 
-To **collect** road data (create `.rvtrip` files), use the **RoadVisionMVP** Android app:
+To **collect** road data (create `.rvtrip` files), use the **GroundTruthMVP** Android app:
 
-1. Open `RoadVisionMVP` folder in Android Studio
+1. Open `GroundTruthMVP` folder in Android Studio
 2. Connect Android device (Android 8.0+)
 3. Click "Run" to install
 4. Grant Camera + Location permissions

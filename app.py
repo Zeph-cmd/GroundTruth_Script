@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -460,8 +461,91 @@ def _load_preview_bytes(image_path: str) -> bytes:
     return Path(image_path).read_bytes()
 
 
-st.set_page_config(page_title="RoadVision Dataset Explorer", layout="wide")
-st.title("RoadVision Dataset Explorer")
+TRIAL_DAYS = 30
+APP_NAME = "GroundTruth"
+TRIAL_STATE_FILE = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME / ".lic"
+
+
+def _load_trial_start_date():
+    """Read the launcher-created trial start date from %APPDATA%\\GroundTruth\\.lic."""
+    if not TRIAL_STATE_FILE.exists():
+        return None
+    try:
+        data = json.loads(TRIAL_STATE_FILE.read_text(encoding="utf-8"))
+        start_text = str(data.get("start_date", ""))[:10]
+        return datetime.fromisoformat(start_text).date()
+    except Exception:
+        return None
+
+
+def _trial_days_remaining():
+    """Return (days_remaining, is_expired, start_date)."""
+    start_date = _load_trial_start_date()
+    if start_date is None:
+        return TRIAL_DAYS, False, None
+
+    elapsed = (datetime.now().date() - start_date).days
+    remaining = max(TRIAL_DAYS - elapsed, 0)
+    return remaining, remaining == 0, start_date
+
+
+def _render_trial_expiry_indicator():
+    """Blinking red trial clock in the sidebar."""
+    days_remaining, expired, start_date = _trial_days_remaining()
+
+    if expired:
+        label = "EXPIRED"
+        sub = f"Trial expired {start_date.isoformat() if start_date else 'today'}"
+    else:
+        label = f"{days_remaining} day{'s' if days_remaining != 1 else ''} left"
+        sub = "Trial access"
+
+    st.sidebar.markdown(
+        f"""
+        <style>
+        @keyframes rvTrialBlink {{
+            0%, 100% {{ opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 31, 31, 0.75); }}
+            50% {{ opacity: 0.35; transform: scale(0.72); box-shadow: 0 0 14px 8px rgba(255, 31, 31, 0.25); }}
+        }}
+        </style>
+        <div style="
+            position: sticky;
+            bottom: 8px;
+            left: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px;
+            margin-top: 24px;
+            border: 1px solid rgba(255, 31, 31, 0.55);
+            border-radius: 10px;
+            background: rgba(120, 0, 0, 0.22);
+            color: #ffdede;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 12px;
+            line-height: 1.25;
+        ">
+            <span style="
+                width: 13px;
+                height: 13px;
+                border-radius: 50%;
+                background: #ff1f1f;
+                display: inline-block;
+                animation: rvTrialBlink 0.9s ease-in-out infinite;
+                flex: 0 0 auto;
+            "></span>
+            <span>
+                <strong style="color: #ffffff;">{label}</strong><br>
+                <span style="opacity: 0.88;">{sub}</span>
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+st.set_page_config(page_title="GroundTruth Dataset Explorer", layout="wide")
+st.title("GroundTruth Dataset Explorer")
 
 with st.sidebar:
     enable_ai_detection = st.radio(
@@ -707,8 +791,10 @@ with st.sidebar:
     if st.button("Refresh"):
         st.rerun()
 
+    _render_trial_expiry_indicator()
 
-st.write("Welcome to RoadVision Dataset Explorer.")
+
+st.write("Welcome to GroundTruth Dataset Explorer.")
 
 if not trips:
     st.info("No trips found.\nPlace exported trip folders inside ./trips/")
@@ -903,35 +989,37 @@ else:
                     interval_figure.update_yaxes(range=[0, max(analytics_intervals["intervals"]) * 1.2])
                     chart_columns[0].plotly_chart(interval_figure, use_container_width=True)
 
-                # Chart 2: AI Detection Summary (if detections exist)
-                detection_counts = []
-                detection_labels = []
-                for record in image_records:
-                    try:
-                        results = run_detection(record["path"])
-                        if results and len(results) > 0:
-                            detection_counts.append(len(results))
-                            detection_labels.append(record["name"])
-                    except:
-                        pass
+                # Chart 2: AI Detection Summary (only when AI is enabled)
+                if ai_detection_enabled:
+                    detection_counts = []
+                    detection_labels = []
+                    for record in image_records:
+                        try:
+                            detection_state = _cached_yolo_detections(str(record["path"]), _image_signature(record["path"]))
+                            results = detection_state.get("detections", [])
+                            if results and len(results) > 0:
+                                detection_counts.append(len(results))
+                                detection_labels.append(record["name"])
+                        except Exception:
+                            pass
 
-                if detection_counts:
-                    detection_figure = go.Figure()
-                    detection_figure.add_trace(go.Bar(
-                        x=detection_labels[:50],  # Show first 50 for readability
-                        y=detection_counts[:50],
-                        marker_color="#00E5FF",
-                        name="Objects Detected"
-                    ))
-                    detection_figure.update_layout(
-                        title="AI Detection Results (First 50 Images)",
-                        xaxis_title="Image Filename",
-                        yaxis_title="Number of Objects",
-                        template="plotly_dark",
-                        height=350,
-                        xaxis_tickangle=-45
-                    )
-                    chart_columns[1].plotly_chart(detection_figure, use_container_width=True)
+                    if detection_counts:
+                        detection_figure = go.Figure()
+                        detection_figure.add_trace(go.Bar(
+                            x=detection_labels[:50],  # Show first 50 for readability
+                            y=detection_counts[:50],
+                            marker_color="#00E5FF",
+                            name="Objects Detected"
+                        ))
+                        detection_figure.update_layout(
+                            title="AI Detection Results (First 50 Images)",
+                            xaxis_title="Image Filename",
+                            yaxis_title="Number of Objects",
+                            template="plotly_dark",
+                            height=350,
+                            xaxis_tickangle=-45
+                        )
+                        chart_columns[1].plotly_chart(detection_figure, use_container_width=True)
 
                 analytics_notes = st.columns(4)
                 analytics_notes[0].metric("Avg interval", f"{analytics_intervals['average_seconds']:.1f} s")

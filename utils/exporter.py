@@ -34,7 +34,7 @@ def _timestamp_suffix() -> str:
 
 
 def _build_export_stem(trip_id: str) -> str:
-    return f"RoadVision_Trip_{_slugify(trip_id)}_{_timestamp_suffix()}"
+    return f"GroundTruth_Trip_{_slugify(trip_id)}_{_timestamp_suffix()}"
 
 
 def _serialize_value(value: Any) -> Any:

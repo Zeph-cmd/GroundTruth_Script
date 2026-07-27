@@ -22,7 +22,7 @@ def reverse_geocode(latitude: float, longitude: float) -> str:
         url = f"https://nominatim.openstreetmap.org/reverse?lat={latitude}&lon={longitude}&format=json&zoom=16"
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "RoadVision/1.0"}
+            headers={"User-Agent": "GroundTruth/1.0"}
         )
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
