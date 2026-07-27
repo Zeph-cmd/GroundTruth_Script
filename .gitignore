@@ -50,7 +50,7 @@ access_codes.txt
 dist/
 build/
 *.spec.bak
-RoadVision.exe
+GroundTruth.exe
 
 # ===== Project runtime / caches =====
 cache/
