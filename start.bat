@@ -1,4 +1,4 @@
 @echo off
-echo Starting GroundTruth...
-.venv310\Scripts\streamlit.exe run app.py
+echo Starting GroundTruth (dev: port 8501)...
+call npm start
 pause

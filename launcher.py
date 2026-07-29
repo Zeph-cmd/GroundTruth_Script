@@ -103,7 +103,7 @@ _streamlit_conf_dir.mkdir(parents=True, exist_ok=True)
         '',
         '[server]',
         'headless = true',
-        'port = 8501',
+        'port = 8502',
         'address = "127.0.0.1"',
         'runOnSave = false',
         'fileWatcherType = "none"',
@@ -294,7 +294,7 @@ def run_streamlit_app():
         import webbrowser
         time.sleep(2.5)
         try:
-            webbrowser.open("http://127.0.0.1:8501")
+            webbrowser.open("http://127.0.0.1:8502")
         except Exception:
             pass
 
@@ -312,11 +312,11 @@ def run_streamlit_app():
     os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
     os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
     os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
-    os.environ["STREAMLIT_SERVER_PORT"] = "8501"
+    os.environ["STREAMLIT_SERVER_PORT"] = "8502"
     os.environ["STREAMLIT_SERVER_ADDRESS"] = "127.0.0.1"
 
     flag_options = {
-        "server.port": 8501,
+        "server.port": 8502,
         "server.address": "127.0.0.1",
     }
 

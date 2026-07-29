@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "description": "GroundTruth Dataset Explorer - Streamlit app",
   "scripts": {
-    "start": ".venv310\\Scripts\\streamlit.exe run app.py",
-    "dev": ".venv310\\Scripts\\streamlit.exe run app.py --server.port 8501"
+    "start": ".venv310\\Scripts\\python.exe -m streamlit run app.py",
+    "dev": ".venv310\\Scripts\\python.exe -m streamlit run app.py --server.port 8501"
   },
   "private": true
 }
