@@ -305,6 +305,7 @@ def build_trip_map(
     *,
     show_markers: bool = True,
     show_route: bool = True,
+    imagery: bool = False,
     marker_sample_limit: int = 2000,
     route_sample_limit: int = 5000,
 ) -> dict[str, Any]:
@@ -340,7 +341,17 @@ def build_trip_map(
         zoom_start=13,
         control_scale=True,
         prefer_canvas=True,
+        tiles=None if imagery else "OpenStreetMap",
     )
+
+    if imagery:
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+            name="Satellite imagery",
+            overlay=False,
+            control=True,
+        ).add_to(map_object)
 
     if show_route:
         route_points = _sample_points(ordered_points, route_sample_limit)
@@ -367,11 +378,16 @@ def build_trip_map(
                 f"<strong>Latitude:</strong> {latitude}<br>"
                 f"<strong>Longitude:</strong> {longitude}"
             )
-            folium.Marker(
+            folium.CircleMarker(
                 location=[latitude, longitude],
                 tooltip=filename,
                 popup=folium.Popup(popup_html, max_width=320),
-                icon=folium.Icon(color="blue", icon="camera", prefix="fa"),
+                radius=8,
+                color="#ffffff",
+                weight=2,
+                fill=True,
+                fill_color="#007bff",
+                fill_opacity=1.0,
             ).add_to(marker_group)
         marker_group.add_to(map_object)
 

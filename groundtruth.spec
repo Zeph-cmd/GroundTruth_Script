@@ -105,6 +105,9 @@ if audit_cfg.exists():
 
 # --- Hidden imports (declare them; let contrib hooks + Analysis collect) ---
 hiddenimports = [
+    "licensing",
+    "cryptography",
+    "cryptography.hazmat.primitives.asymmetric.ed25519",
     "streamlit",
     "streamlit.web",
     "streamlit.web.bootstrap",

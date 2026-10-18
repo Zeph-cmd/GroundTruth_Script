@@ -73,8 +73,11 @@ from utils.analytics import (
     detect_data_gaps,
     estimate_distance_from_gps,
 )
-from utils.share_export import ShareExportError, export_full_dataset, export_lightweight_package, export_selected_trip, share_file
+from utils.share_export import ShareExportError, export_full_dataset, share_file
+import licensing
+import utils.ai_assistant as ai_assistant
 from utils.metadata_loader import load_trip_metadata
+from utils.godseye import build_dashboard_url
 from utils.map_loader import build_trip_map, extract_gps_points
 from utils.image_enhancer import get_enhanced_image_path
 from utils.image_loader import get_trip_images
@@ -439,10 +442,6 @@ def _run_share_export(action: str, selected_trip_path: Path, selected_trip: str,
     try:
         if action == "full":
             result = export_full_dataset(TRIPS_DIR, progress_callback=_update_status)
-        elif action == "selected":
-            result = export_selected_trip(selected_trip_path, selected_trip, metadata, image_records, analytics_bundle, progress_callback=_update_status)
-        elif action == "lightweight":
-            result = export_lightweight_package(selected_trip_path, selected_trip, metadata, image_records, analytics_bundle, progress_callback=_update_status)
         else:
             raise ShareExportError("unsupported export format")
 
@@ -456,49 +455,172 @@ def _run_share_export(action: str, selected_trip_path: Path, selected_trip: str,
         logger.exception("Unexpected share/export failure for %s", selected_trip_path)
 
 
+AI_WELCOME_TEXT = (
+    "\U0001F916 **Welcome to GroundTruth!**\n\n"
+    "I'm your GroundTruth Assistant. Ask me anything about the app — features, evidence "
+    "verification, the authenticity score, coverage, maps, exports — or about your trip data.\n\n"
+    "*Click the robot button (bottom-right) again to close this chat.*"
+)
+
+
+def _render_floating_robot_css():
+    """Style the robot toggle button as a floating circular chat bubble."""
+    st.markdown(
+        "<style>"
+        ".st-key-gt_robot_fab{height:0;overflow:visible;margin:0;}"
+        ".st-key-gt_robot_fab button{position:fixed;bottom:24px;right:24px;z-index:999999;"
+        "width:64px;height:64px;border-radius:50%;font-size:32px;line-height:1;padding:0;"
+        "background:linear-gradient(135deg,#4f8cff,#7c3aed);color:#ffffff;border:none;"
+        "box-shadow:0 6px 24px rgba(79,140,255,.45);transition:transform .18s ease;}"
+        ".st-key-gt_robot_fab button:hover{transform:scale(1.1);filter:brightness(1.08);}"
+        ".st-key-gt_robot_fab button:focus{color:#ffffff;box-shadow:0 6px 24px rgba(79,140,255,.45);"
+        "border-color:#4f8cff;}"
+        ".st-key-gt_robot_fab button p{font-size:32px;}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_ai_assistant():
+    """Subscriber-only AI assistant (Botpress); opened via the floating robot button."""
+    usage = licensing.get_ai_usage()
+
+    if usage["access"] == "trial_locked":
+        st.info("The AI Assistant is available to subscribers. Contact the developer to subscribe.")
+        return
+    if usage["access"] == "expired":
+        st.info("Your access has expired, so the AI Assistant is locked. Contact the developer to renew.")
+        return
+    if not ai_assistant.is_configured():
+        st.caption("The AI Assistant is being configured. Contact the developer if this message persists.")
+        return
+
+    # Floating robot toggle: click to open/close the chat.
+    if st.button("\U0001F916", key="gt_robot_fab", help="GroundTruth Assistant — click to open / close the chat"):
+        st.session_state.gt_chat_open = not st.session_state.get("gt_chat_open", False)
+    _render_floating_robot_css()
+
+    if not st.session_state.get("gt_chat_open"):
+        return
+
+    with st.chat_message("assistant"):
+        st.markdown(AI_WELCOME_TEXT)
+
+    if "ai_messages" not in st.session_state:
+        st.session_state.ai_messages = []
+
+    for message in st.session_state.ai_messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    if usage["access"] == "limit_reached":
+        st.warning(
+            f"Question limit reached for this subscription ({usage['used']} of {usage['limit']} used). "
+            "Renew or upgrade your plan for more."
+        )
+        return
+
+    st.caption(f"Questions used: {usage['used']} of {usage['limit']} for this subscription")
+
+    prompt = st.chat_input("Ask a question...")
+    if not prompt:
+        return
+
+    st.session_state.ai_messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                replies = ai_assistant.send_question(prompt)
+            except ai_assistant.AIAssistantError as exc:
+                st.error(str(exc))
+                return
+            except Exception:
+                st.error("Something went wrong talking to the AI service. Try again.")
+                return
+
+    # Only a successfully answered question consumes the subscription quota.
+    licensing.consume_ai_use()
+    reply_text = "\n\n".join(replies)
+    st.session_state.ai_messages.append({"role": "assistant", "content": reply_text})
+    st.rerun()
+
+
+def _render_ai_usage_card():
+    """Very visible AI usage card in the sidebar."""
+    usage = licensing.get_ai_usage()
+
+    if usage["access"] in ("allowed", "limit_reached"):
+        used, remaining, limit = usage["used"], usage["remaining"], usage["limit"]
+        pct = int(100 * used / limit) if limit else 100
+        bar_color = "#22c55e" if pct < 60 else "#f59e0b" if pct < 100 else "#ef4444"
+        if usage["access"] == "limit_reached":
+            headline = "Limit reached"
+        else:
+            headline = f"{remaining} question{'s' if remaining != 1 else ''} left"
+        st.markdown(
+            "<div style='background:linear-gradient(135deg,#141a3a,#1c2350);"
+            "border:1px solid #3a4380;border-radius:12px;padding:14px 16px;margin-top:14px;'>"
+            "<div style='font-size:11px;letter-spacing:2px;color:#8fa0ff;font-weight:700;'>AI ASSISTANT</div>"
+            f"<div style='font-size:26px;font-weight:800;color:#ffffff;margin:6px 0 2px 0;'>{headline}</div>"
+            f"<div style='font-size:13px;color:#aab4e8;'>{used} of {limit} subscription questions used</div>"
+            "<div style='background:#2a3160;border-radius:6px;height:10px;margin-top:10px;overflow:hidden;'>"
+            f"<div style='background:{bar_color};width:{pct}%;height:100%;border-radius:6px;'></div>"
+            "</div></div>",
+            unsafe_allow_html=True,
+        )
+    elif usage["access"] == "trial_locked":
+        st.markdown(
+            "<div style='background:linear-gradient(135deg,#141a3a,#1c2350);"
+            "border:1px solid #3a4380;border-radius:12px;padding:14px 16px;margin-top:14px;'>"
+            "<div style='font-size:11px;letter-spacing:2px;color:#8fa0ff;font-weight:700;'>AI ASSISTANT</div>"
+            "<div style='font-size:15px;font-weight:700;color:#ffffff;margin-top:6px;'>Subscribers only</div>"
+            "<div style='font-size:13px;color:#aab4e8;margin-top:4px;'>Subscribe to unlock the AI Assistant.</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            "<div style='background:linear-gradient(135deg,#141a3a,#1c2350);"
+            "border:1px solid #3a4380;border-radius:12px;padding:14px 16px;margin-top:14px;'>"
+            "<div style='font-size:11px;letter-spacing:2px;color:#8fa0ff;font-weight:700;'>AI ASSISTANT</div>"
+            "<div style='font-size:15px;font-weight:700;color:#ffffff;margin-top:6px;'>Locked</div>"
+            "<div style='font-size:13px;color:#aab4e8;margin-top:4px;'>Subscription expired — renew to unlock.</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
 @st.cache_data(show_spinner=False)
 def _load_preview_bytes(image_path: str) -> bytes:
     return Path(image_path).read_bytes()
 
 
-TRIAL_DAYS = 30
-APP_NAME = "GroundTruth"
-TRIAL_STATE_FILE = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME / ".lic"
-
-
-def _load_trial_start_date():
-    """Read the launcher-created trial start date from %APPDATA%\\GroundTruth\\.lic."""
-    if not TRIAL_STATE_FILE.exists():
-        return None
-    try:
-        data = json.loads(TRIAL_STATE_FILE.read_text(encoding="utf-8"))
-        start_text = str(data.get("start_date", ""))[:10]
-        return datetime.fromisoformat(start_text).date()
-    except Exception:
-        return None
-
-
-def _trial_days_remaining():
-    """Return (days_remaining, is_expired, start_date)."""
-    start_date = _load_trial_start_date()
-    if start_date is None:
-        return TRIAL_DAYS, False, None
-
-    elapsed = (datetime.now().date() - start_date).days
-    remaining = max(TRIAL_DAYS - elapsed, 0)
-    return remaining, remaining == 0, start_date
-
-
 def _render_trial_expiry_indicator():
-    """Blinking red trial clock in the sidebar."""
-    days_remaining, expired, start_date = _trial_days_remaining()
+    """Blinking trial/license clock in the sidebar (state from licensing.py)."""
+    # Remote kill switch (throttled inside licensing.py): a revoked device
+    # locks immediately, even mid-session.
+    revoked_reason = licensing.check_kill_status()
+    if revoked_reason:
+        st.sidebar.error(
+            "Access to GroundTruth has been deactivated on this device. "
+            "Contact the developer with your Device ID."
+        )
+        st.stop()
 
-    if expired:
+    status = licensing.get_status()
+
+    if status["mode"] == "licensed":
+        label = "LICENSED"
+        sub = f"Licensed until {status['licensed_until']} · Device {status['device_id']}"
+    elif status["mode"] == "expired":
         label = "EXPIRED"
-        sub = f"Trial expired {start_date.isoformat() if start_date else 'today'}"
+        sub = f"Trial ended · Device {status['device_id']}"
     else:
-        label = f"{days_remaining} day{'s' if days_remaining != 1 else ''} left"
-        sub = "Trial access"
+        label = f"{status['days_left']} day{'s' if status['days_left'] != 1 else ''} left"
+        sub = f"Trial access · Device {status['device_id']}"
 
     st.sidebar.markdown(
         f"""
@@ -585,6 +707,13 @@ with st.sidebar:
             st.error(str(exc))
 
     trips = get_trip_folders()
+
+    st.subheader("External View")
+    st.link_button(
+        "Open God's Eye Dashboard",
+        build_dashboard_url(),
+        use_container_width=True,
+    )
 
     # Show verification banner if .rvtrip was imported
     if st.session_state.get("verification_result"):
@@ -792,6 +921,7 @@ with st.sidebar:
         st.rerun()
 
     _render_trial_expiry_indicator()
+    _render_ai_usage_card()
 
 
 st.write("Welcome to GroundTruth Dataset Explorer.")
@@ -857,7 +987,7 @@ else:
         )
 
         st.divider()
-        st.subheader("Trip Route Map")
+        st.subheader("Trip Imagery Map")
 
         gps_points = extract_gps_points(metadata_result.get("metadata"), selected_trip_path)
         if not gps_points:
@@ -865,31 +995,25 @@ else:
         else:
             gps_point_lookup = {str(point["filename"]).lower(): point for point in gps_points}
 
-            # Google Maps buttons — both always visible side by side
             first_point = gps_points[0]
             map_lat = float(first_point["latitude"])
             map_lon = float(first_point["longitude"])
-            # !3m1!1e3 = satellite imagery, !3m1!1e2 = standard map
             imagery_url = f"https://www.google.com/maps/@{map_lat},{map_lon},18z/data=!3m1!1e3"
-            raw_map_url = f"https://www.google.com/maps/@{map_lat},{map_lon},18z/data=!3m1!1e2"
-            gmaps_cols = st.columns(2)
-            gmaps_cols[0].markdown(
+            st.markdown(
                 f'<a href="{imagery_url}" target="_blank" style="display:block;padding:10px 16px;background:#4285F4;color:white;text-decoration:none;border-radius:6px;text-align:center;font-weight:bold;">🛣️ View Imagery</a>',
                 unsafe_allow_html=True,
             )
-            gmaps_cols[1].markdown(
-                f'<a href="{raw_map_url}" target="_blank" style="display:block;padding:10px 16px;background:#34A853;color:white;text-decoration:none;border-radius:6px;text-align:center;font-weight:bold;">🗺️ View Raw Map</a>',
-                unsafe_allow_html=True,
-            )
 
-            map_columns = st.columns(2)
-            show_markers = map_columns[0].checkbox("Show markers", value=True)
-            show_route = map_columns[1].checkbox("Show route", value=True)
+            map_controls = st.columns(2)
+            show_markers = map_controls[0].checkbox("Show markers", value=True)
+            show_route = map_controls[1].checkbox("Show route", value=True)
 
             map_result = build_trip_map(
                 gps_points,
                 show_markers=show_markers,
                 show_route=show_route,
+                imagery=True,
+                marker_sample_limit=len(gps_points),
             )
 
             if map_result["sampled"]:
@@ -1123,13 +1247,10 @@ else:
                     st.warning("Share & Export disabled: trip integrity check failed.")
                 else:
                     _selected_trip_name = metadata_result.get("trip_id") or selected_trip_path.name
-                    export_columns = st.columns(3)
-                    if export_columns[0].button("Export Full Dataset"):
+                    if st.button("Export"):
                         _run_share_export("full", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
-                    if export_columns[1].button("Export Selected Trip"):
-                        _run_share_export("selected", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
-                    if export_columns[2].button("Export Lightweight Package"):
-                        _run_share_export("lightweight", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
+
+                _render_ai_assistant()
 
         st.divider()
         st.subheader("Gallery")
@@ -1255,14 +1376,8 @@ else:
                                 lat_val = float(latitude)
                                 lon_val = float(longitude)
                                 detail_imagery_url = f"https://www.google.com/maps/@{lat_val},{lon_val},18z/data=!3m1!1e3"
-                                detail_raw_url = f"https://www.google.com/maps/@{lat_val},{lon_val},18z"
-                                detail_gmaps_cols = st.columns(2)
-                                detail_gmaps_cols[0].markdown(
+                                st.markdown(
                                     f'<a href="{detail_imagery_url}" target="_blank" style="display:block;padding:6px 10px;background:#4285F4;color:white;text-decoration:none;border-radius:4px;text-align:center;font-size:13px;font-weight:bold;">🛣️ View Imagery</a>',
-                                    unsafe_allow_html=True,
-                                )
-                                detail_gmaps_cols[1].markdown(
-                                    f'<a href="{detail_raw_url}" target="_blank" style="display:block;padding:6px 10px;background:#34A853;color:white;text-decoration:none;border-radius:4px;text-align:center;font-size:13px;font-weight:bold;">️ View Raw Map</a>',
                                     unsafe_allow_html=True,
                                 )
                             except (ValueError, TypeError):

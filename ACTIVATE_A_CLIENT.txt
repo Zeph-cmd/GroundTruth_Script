@@ -1,0 +1,58 @@
+HOW TO ACTIVATE A CLIENT (quick reference)
+==========================================
+
+1. Client sends you their Device ID (looks like: GT-XXXX-XXXX-XXXX)
+
+2. Open Command Prompt in the GroundTruth_Script folder, then run ONE of:
+
+MONTHLY (30 days):
+    .venv310\Scripts\python.exe tools\license_issuer.py --customer "CLIENT NAME" --device GT-XXXX-XXXX-XXXX --plan 30d
+
+YEARLY (365 days):
+    .venv310\Scripts\python.exe tools\license_issuer.py --customer "CLIENT NAME" --device GT-XXXX-XXXX-XXXX --plan 1y
+
+3. The command prints the ACTIVATION CODE - copy it and send to the client
+   (WhatsApp is fine). They paste it into the app's locked window.
+
+4. Every activation is saved automatically to licenses.db (with the client
+   name, device, plan and expiry). To review your ledger at any time:
+
+    .venv310\Scripts\python.exe tools\license_issuer.py --list
+
+   Export to a spreadsheet:
+
+    .venv310\Scripts\python.exe tools\license_issuer.py --export-csv activations.csv
+
+KILL SWITCH (remotely disable ONE client device)
+================================================
+Requires one-time setup: GitHub repo Settings -> Pages -> Deploy from a
+branch -> main /docs -> Save. After that the kill list is live at
+https://zeph-cmd.github.io/GroundTruth_Script/killlist.json
+
+KILL a device (app locks within minutes of the push):
+    .venv310\Scripts\python.exe tools\killlist_tool.py --revoke --device GT-XXXX-XXXX-XXXX --reason "why"
+    git add docs/killlist.json && git commit -m "killswitch update" && git push
+
+KILL by license serial instead (e.g. serial D308 from the ledger):
+    .venv310\Scripts\python.exe tools\killlist_tool.py --revoke --serial D308
+
+UN-KILL (device works again):
+    .venv310\Scripts\python.exe tools\killlist_tool.py --restore --device GT-XXXX-XXXX-XXXX
+    git add docs/killlist.json && git commit -m "killswitch update" && git push
+
+SHOW who is currently killed:
+    .venv310\Scripts\python.exe tools\killlist_tool.py --list
+
+NOTES
+-----
+- Replace "CLIENT NAME" and GT-XXXX-XXXX-XXXX with the real values.
+- Requires license_private_key.pem in this folder (never share or delete it).
+- Codes only work on the exact device ID they were issued for.
+- A killed device shows a "Deactivated" window with your contact info.
+  It cannot be un-killed by entering a new activation code - only by you
+  removing it from the kill list and pushing.
+- Kill by DEVICE to disable the machine permanently; kill by SERIAL to
+  disable just one subscription (a new code with a new serial works again).
+- Offline clients: the kill sticks once the device has checked in at least
+  once; a device that has NEVER been online keeps working until it does.
+- Keep this file and the whole GroundTruth_Script folder OFF client machines.

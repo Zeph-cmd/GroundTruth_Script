@@ -1,24 +1,26 @@
 # ---------------------------------------------------------------------------
-# launcher.py - Simple trial + access-code wrapper for GroundTruth
+# launcher.py - Trial gate + signed activation-code unlock for GroundTruth
 # ---------------------------------------------------------------------------
-# 1. On first run, save today's date to hidden file %APPDATA%\GroundTruth\.lic
-# 2. Every run, compute days_since_start = today - saved_date
-# 3. If days_since_start >= 30, block launch and show a small Tk window asking
-#    for an access code.
-# 4. VALID_CODES is a hardcoded list of 50 random codes (one-time use).
-# 5. On valid code, reset saved date to today and remove the code from use.
-# 6. Wrong code -> "Invalid code", stays locked.
-# 7. Built with PyInstaller --onefile, no console window.
+# 1. First run starts a 15-day free trial, bound to this device's fingerprint
+#    and stored redundantly (see licensing.py).
+# 2. Every run, the trial clock is checked. When expired, launch is blocked
+#    and a small Tk window shows this machine's Device ID and asks for an
+#    activation code.
+# 3. Activation codes are ed25519-signed by the seller (tools/license_issuer.py)
+#    and bound to the Device ID. The exe contains only the public key, so
+#    codes cannot be forged from a unpacked build.
+# 4. A valid code grants access for its plan duration (30-day or 1-year).
+# 5. Built with PyInstaller --onefile, no console window.
 # ---------------------------------------------------------------------------
 import os
 import sys
-import json
 from datetime import date
 from pathlib import Path
 
 # Enable faulthandler early so we get tracebacks on segfaults/crashes
 try:
     import faulthandler
+
     faulthandler.enable()
 except Exception:
     pass
@@ -27,31 +29,12 @@ except Exception:
 # CONFIG
 # ===========================================================================
 APP_NAME = "GroundTruth"
-TRIAL_DAYS = 30
-
-# 50 random one-time-use access codes. Give ONE to a client when their trial
-# expires. Each code works exactly once per machine.
-VALID_CODES = [
-    "GT-VCUS-HGYK", "GT-GVE2-84HN", "GT-YVGW-KVAU", "GT-47MV-ZTTG",
-    "GT-9ANN-SQAW", "GT-XHZS-F2BB", "GT-KQDF-26AA", "GT-L4VL-YNCB",
-    "GT-4N2M-FH3D", "GT-8JF9-2S94", "GT-CEW2-BDHN", "GT-YX2B-5SDH",
-    "GT-F9E6-A9AR", "GT-T3S7-LT9Z", "GT-W662-D98L", "GT-L2VX-69X6",
-    "GT-78KP-6M9C", "GT-RS4P-ANMP", "GT-H2R8-ETBX", "GT-E6VX-3UFK",
-    "GT-JVL9-AL9D", "GT-PP7D-QCVU", "GT-78JX-3UUD", "GT-FTPE-VXMV",
-    "GT-ALCT-62BA", "GT-9KFU-FMK7", "GT-7PAP-HNL3", "GT-4M55-JQF2",
-    "GT-5PCA-JGMC", "GT-8LV8-HJA2", "GT-YCQ8-5ZH3", "GT-TXCM-UABQ",
-    "GT-BDR6-KGWE", "GT-GBMZ-M983", "GT-S8HK-3E76", "GT-V5AY-FTLB",
-    "GT-P3F2-KYPC", "GT-95XE-FZ5U", "GT-QKV3-AFQY", "GT-MSUG-A7GK",
-    "GT-R6EN-85QW", "GT-V5DF-URSK", "GT-V7FY-7YEW", "GT-CF5B-9SVG",
-    "GT-K4TR-K5VN", "GT-NYQ3-R6GD", "GT-A4AL-9QNZ", "GT-C4F3-G5WJ",
-    "GT-JDM5-FGZM", "GT-LWLN-4LXX",
-]
+TRIAL_DAYS = 15  # free trial per machine (see licensing.py)
 
 # ===========================================================================
 # Windowed-mode fix + crash logging (PyInstaller --windowed sets stdout/stderr
 # to None, so all errors are silently swallowed)
 # ===========================================================================
-_crash_log_path = None
 if getattr(sys, "frozen", False):
     try:
         _crash_log_path = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME / "crash.log"
@@ -62,23 +45,17 @@ if getattr(sys, "frozen", False):
     except Exception:
         if sys.stdout is None:
             sys.stdout = open(os.devnull, "w", encoding="utf-8")
-        if sys.stderr is None:
-            sys.stderr = open(os.devnull, "w", encoding="utf-8")
 else:
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
-    if sys.stderr is None:
-        sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 # ===========================================================================
 # Paths - user data lives in %APPDATA%\GroundTruth so the exe is fully portable
 # ===========================================================================
 USER_DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / APP_NAME
 USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-LIC_FILE = USER_DATA_DIR / ".lic"
-USED_CODES_FILE = USER_DATA_DIR / ".used_codes"
 
-# Make frozen app modules importable
+# Make frozen app modules importable (launcher.py, licensing.py, app.py, utils/)
 if getattr(sys, "frozen", False):
     base = Path(sys._MEIPASS) if hasattr(sys, "_MEIPASS") else Path(sys.executable).parent
     for p in (str(base), str(base / "src")):
@@ -97,141 +74,207 @@ os.chdir(str(USER_DATA_DIR))
 _streamlit_conf_dir = USER_DATA_DIR / ".streamlit"
 _streamlit_conf_dir.mkdir(parents=True, exist_ok=True)
 (_streamlit_conf_dir / "config.toml").write_text(
-    '\n'.join([
-        '[global]',
-        'developmentMode = false',
-        '',
-        '[server]',
-        'headless = true',
-        'port = 8502',
-        'address = "127.0.0.1"',
-        'runOnSave = false',
-        'fileWatcherType = "none"',
-        'maxUploadSize = 2048',
-        '',
-        '[browser]',
-        'gatherUsageStats = false',
-        '',
-    ]),
-    encoding='utf-8',
+    "\n".join(
+        [
+            "[global]",
+            "developmentMode = false",
+            "",
+            "[server]",
+            "headless = true",
+            "port = 8502",
+            'address = "127.0.0.1"',
+            "runOnSave = false",
+            "maxUploadSize = 2048",
+            "",
+            "[browser]",
+            "gatherUsageStats = false",
+            "",
+        ]
+    ),
+    encoding="utf-8",
 )
 
-
-# ===========================================================================
-# Trial logic
-# ===========================================================================
-def _today():
-    return date.today()
-
-
-def _read_start_date():
-    """Read saved trial-start date from hidden .lic file. Returns date or None."""
-    if not LIC_FILE.exists():
-        return None
-    try:
-        data = json.loads(LIC_FILE.read_text(encoding="utf-8"))
-        return date.fromisoformat(data.get("start_date", "")[:10])
-    except Exception:
-        return None
-
-
-def _write_start_date(d):
-    """Save trial-start date and mark the file hidden."""
-    try:
-        # Clear hidden attribute first so we can overwrite (Windows)
-        if LIC_FILE.exists():
-            try:
-                import ctypes
-                ctypes.windll.kernel32.SetFileAttributesW(str(LIC_FILE), 0x80)  # NORMAL
-            except Exception:
-                pass
-        LIC_FILE.write_text(json.dumps({"start_date": d.isoformat()}), encoding="utf-8")
-        try:
-            import ctypes
-            ctypes.windll.kernel32.SetFileAttributesW(str(LIC_FILE), 0x2)  # hidden
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
-def _load_used_codes():
-    """Return the set of codes already consumed on this machine."""
-    if not USED_CODES_FILE.exists():
-        return set()
-    try:
-        data = json.loads(USED_CODES_FILE.read_text(encoding="utf-8"))
-        return set(data.get("used", []))
-    except Exception:
-        return set()
-
-
-def _save_used_code(code):
-    """Record a code as used (single-use enforcement)."""
-    used = _load_used_codes()
-    used.add(code)
-    try:
-        # Clear hidden attribute first so we can overwrite (Windows)
-        if USED_CODES_FILE.exists():
-            try:
-                import ctypes
-                ctypes.windll.kernel32.SetFileAttributesW(str(USED_CODES_FILE), 0x80)  # NORMAL
-            except Exception:
-                pass
-        USED_CODES_FILE.write_text(json.dumps({"used": list(used)}), encoding="utf-8")
-        try:
-            import ctypes
-            ctypes.windll.kernel32.SetFileAttributesW(str(USED_CODES_FILE), 0x2)  # hidden
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
-def _is_code_valid(code):
-    """True if code is in VALID_CODES and hasn't been used yet on this machine."""
-    code = code.strip().upper()
-    if code not in VALID_CODES:
-        return False
-    if code in _load_used_codes():
-        return False
-    return True
+import licensing  # noqa: E402  (after sys.path setup so frozen builds resolve it)
 
 
 # ===========================================================================
 # Locked dialog (Tk)
 # ===========================================================================
-def show_locked_dialog(days_over):
+DEVELOPER_WEBSITE = "https://zephobed.me"
+DEVELOPER_PHONE_WHATSAPP = "0257711831"
+
+
+def show_deactivated_dialog(reason: str) -> None:
     """
-    Show a small window: 'Trial expired. Enter access code to continue.'
-    Returns True if a valid code was entered (and trial reset), else False.
+    Kill-switch window: this device/serial was remotely revoked by the
+    developer. No activation entry - only the developer can reverse it
+    (by removing the entry from the kill list).
     """
     import tkinter as tk
-    from tkinter import ttk, messagebox
+    import webbrowser
+    from tkinter import ttk
 
-    unlocked = {"value": False}
+    device_id = licensing.get_device_id()
 
     root = tk.Tk()
-    root.title("GroundTruth - Trial Expired")
-    root.geometry("420x280")
+    root.title("GroundTruth - Deactivated")
+    root.geometry("560x330")
     root.resizable(False, False)
 
-    # Center on screen
-    w, h = 420, 280
+    w, h = 560, 330
     x = (root.winfo_screenwidth() - w) // 2
     y = (root.winfo_screenheight() - h) // 2
     root.geometry(f"{w}x{h}+{x}+{y}")
 
-    ttk.Label(root, text="Trial Expired", font=("Segoe UI", 18, "bold")).pack(pady=(30, 8))
+    ttk.Label(root, text="Deactivated", font=("Segoe UI", 18, "bold")).pack(pady=(24, 4))
     ttk.Label(
         root,
-        text=f"Your {TRIAL_DAYS}-day trial has ended.\nEnter an access code to continue.",
+        text=(
+            "Access to GroundTruth has been deactivated on this device.\n"
+            "If you believe this is a mistake, contact the developer below with your Device ID."
+        ),
         justify="center",
         font=("Segoe UI", 10),
-    ).pack(pady=(0, 20))
+    ).pack(pady=(0, 12))
 
+    # --- Device ID + Get Device ID (copy) button ---
+    device_frame = ttk.Frame(root)
+    device_frame.pack(pady=2)
+    ttk.Label(device_frame, text="Your Device ID:", font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
+    device_var = tk.StringVar(value=device_id)
+    ttk.Entry(device_frame, textvariable=device_var, width=22, font=("Consolas", 12), state="readonly").pack(side="left")
+
+    copy_status = tk.StringVar()
+    copy_status.set("")
+
+    def get_device_id():
+        root.clipboard_clear()
+        root.clipboard_append(device_id)
+        copy_status.set("Device ID copied - send it to the developer.")
+
+    ttk.Button(root, text="Get Device ID", command=get_device_id).pack(pady=(6, 2))
+    ttk.Label(root, textvariable=copy_status, foreground="#1a7f37", font=("Segoe UI", 9)).pack()
+
+    # --- Developer contact ---
+    contact = ttk.LabelFrame(root, text="Contact Developer", padding=(12, 6))
+    contact.pack(pady=(12, 2), padx=30, fill="x")
+    ttk.Label(
+        contact,
+        text=f"Website:  zephobed.me\nPhone / WhatsApp:  {DEVELOPER_PHONE_WHATSAPP}",
+        justify="center",
+        font=("Segoe UI", 10),
+    ).pack()
+
+    def open_website():
+        try:
+            webbrowser.open(DEVELOPER_WEBSITE)
+        except Exception:
+            pass
+
+    def copy_whatsapp():
+        root.clipboard_clear()
+        root.clipboard_append(DEVELOPER_PHONE_WHATSAPP)
+        copy_status.set("Phone / WhatsApp number copied.")
+
+    contact_btns = ttk.Frame(contact)
+    contact_btns.pack(pady=(6, 0))
+    ttk.Button(contact_btns, text="Visit Website", command=open_website).grid(row=0, column=0, padx=6)
+    ttk.Button(contact_btns, text="Copy WhatsApp Number", command=copy_whatsapp).grid(row=0, column=1, padx=6)
+
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.mainloop()
+
+
+def show_locked_dialog() -> bool:
+    """
+    Show the locked window: access expired, Device ID to send the developer,
+    developer contact details, and an activation-code entry.
+    Returns True once a valid code activates access.
+    """
+    import tkinter as tk
+    import webbrowser
+    from tkinter import ttk, messagebox
+
+    status = licensing.get_status()
+    device_id = status["device_id"]
+    reason = status.get("reason", "trial")
+
+    if reason == "subscription":
+        headline = "Subscription Expired"
+        message = (
+            "Your access period has ended.\n"
+            "To renew, contact the developer below with your Device ID."
+        )
+    else:
+        headline = "Trial Expired"
+        message = (
+            f"Your {TRIAL_DAYS}-day free trial has ended.\n"
+            "To continue using GroundTruth, contact the developer below with your Device ID."
+        )
+
+    unlocked = {"value": False}
+
+    root = tk.Tk()
+    root.title("GroundTruth - Access Expired")
+    root.geometry("560x460")
+    root.resizable(False, False)
+
+    # Center on screen
+    w, h = 560, 460
+    x = (root.winfo_screenwidth() - w) // 2
+    y = (root.winfo_screenheight() - h) // 2
+    root.geometry(f"{w}x{h}+{x}+{y}")
+
+    ttk.Label(root, text=headline, font=("Segoe UI", 18, "bold")).pack(pady=(22, 4))
+    ttk.Label(root, text=message, justify="center", font=("Segoe UI", 10)).pack(pady=(0, 10))
+
+    # --- Device ID + Get Device ID (copy) button ---
+    device_frame = ttk.Frame(root)
+    device_frame.pack(pady=2)
+    ttk.Label(device_frame, text="Your Device ID:", font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
+    device_var = tk.StringVar(value=device_id)
+    device_entry = ttk.Entry(device_frame, textvariable=device_var, width=22, font=("Consolas", 12), state="readonly")
+    device_entry.pack(side="left")
+
+    def get_device_id():
+        root.clipboard_clear()
+        root.clipboard_append(device_id)
+        copy_status.set("Device ID copied - send it to the developer.")
+
+    copy_status = tk.StringVar()
+    ttk.Button(root, text="Get Device ID", command=get_device_id).pack(pady=(4, 2))
+    ttk.Label(root, textvariable=copy_status, foreground="#1a7f37", font=("Segoe UI", 9)).pack()
+
+    # --- Developer contact ---
+    contact = ttk.LabelFrame(root, text="Contact Developer", padding=(12, 6))
+    contact.pack(pady=(10, 2), padx=30, fill="x")
+    ttk.Label(
+        contact,
+        text=f"Website:  zephobed.me\nPhone / WhatsApp:  {DEVELOPER_PHONE_WHATSAPP}",
+        justify="center",
+        font=("Segoe UI", 10),
+    ).pack()
+
+    def open_website():
+        try:
+            webbrowser.open(DEVELOPER_WEBSITE)
+        except Exception:
+            pass
+
+    def copy_whatsapp():
+        root.clipboard_clear()
+        root.clipboard_append(DEVELOPER_PHONE_WHATSAPP)
+        copy_status.set("Phone / WhatsApp number copied.")
+
+    contact_btns = ttk.Frame(contact)
+    contact_btns.pack(pady=(6, 0))
+    ttk.Button(contact_btns, text="Visit Website", command=open_website).grid(row=0, column=0, padx=6)
+    ttk.Button(contact_btns, text="Copy WhatsApp Number", command=copy_whatsapp).grid(row=0, column=1, padx=6)
+
+    # --- Activation code entry ---
+    ttk.Label(root, text="Enter activation code:", font=("Segoe UI", 10, "bold")).pack(pady=(10, 2))
     code_var = tk.StringVar()
-    entry = ttk.Entry(root, textvariable=code_var, width=24, font=("Consolas", 13))
+    entry = ttk.Entry(root, textvariable=code_var, width=40, font=("Consolas", 11))
     entry.pack(pady=4)
     entry.focus_set()
 
@@ -241,24 +284,31 @@ def show_locked_dialog(days_over):
     def on_submit(_event=None):
         code = code_var.get().strip()
         if not code:
-            status_var.set("Please enter an access code.")
+            status_var.set("Please enter an activation code.")
             return
-        if _is_code_valid(code):
-            _save_used_code(code.upper())
-            _write_start_date(_today())  # reset trial
-            unlocked["value"] = True
-            messagebox.showinfo("GroundTruth", "Access granted. The app will now start.")
-            root.destroy()
-        else:
-            status_var.set("Invalid code")
+        try:
+            record = licensing.activate(code)
+        except licensing.LicensingError as exc:
+            status_var.set(str(exc))
             code_var.set("")
+            return
+        except Exception:
+            status_var.set("Could not validate the code. Try again.")
+            code_var.set("")
+            return
+        messagebox.showinfo(
+            "GroundTruth",
+            f"Activation successful.\nAccess granted until {record['expiry']}.\nThe app will now start.",
+        )
+        unlocked["value"] = True
+        root.destroy()
 
     def on_cancel():
         root.destroy()
 
     btns = ttk.Frame(root)
-    btns.pack(pady=12)
-    ttk.Button(btns, text="Submit", command=on_submit).grid(row=0, column=0, padx=8)
+    btns.pack(pady=10)
+    ttk.Button(btns, text="Activate", command=on_submit).grid(row=0, column=0, padx=8)
     ttk.Button(btns, text="Exit", command=on_cancel).grid(row=0, column=1, padx=8)
 
     root.bind("<Return>", on_submit)
@@ -292,6 +342,7 @@ def run_streamlit_app():
     def _open_browser():
         import time
         import webbrowser
+
         time.sleep(2.5)
         try:
             webbrowser.open("http://127.0.0.1:8502")
@@ -302,10 +353,6 @@ def run_streamlit_app():
 
     # Production mode is REQUIRED when setting server.port programmatically.
     # In dev mode Streamlit refuses non-default ports.
-    # Streamlit validates config conflicts at IMPORT time and during server
-    # __init__. If global.developmentMode=True (the default) and server.port
-    # is set, it raises RuntimeError. The flag_options below are passed to
-    # bootstrap.run() but some are applied too late - after conflict checks.
     # Setting env vars BEFORE importing streamlit ensures they're picked up
     # during the initial config load.
     os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
@@ -337,25 +384,28 @@ def run_streamlit_app():
 # Main gate
 # ===========================================================================
 def main():
-    start_date = _read_start_date()
+    # Kill switch first: a revoked device stays dead even while a license
+    # or trial would otherwise be active.
+    try:
+        revoked_reason = licensing.check_kill_status()
+    except Exception:
+        revoked_reason = None
+    if revoked_reason:
+        show_deactivated_dialog(revoked_reason)
+        return 1
 
-    # First run: save today
-    if start_date is None:
-        _write_start_date(_today())
+    status = licensing.get_status()
+
+    if status["mode"] == "licensed":
         return run_streamlit_app()
 
-    days_since = (_today() - start_date).days
-
-    if days_since >= TRIAL_DAYS:
-        # Locked - show access-code dialog
+    if status["mode"] == "expired":
         while True:
-            entered = show_locked_dialog(days_since - TRIAL_DAYS)
+            entered = show_locked_dialog()
             if not entered:
                 return 0  # user cancelled / closed
-            # After a valid unlock the trial was reset to today; re-check
-            start_date = _read_start_date()
-            days_since = (_today() - start_date).days
-            if days_since < TRIAL_DAYS:
+            status = licensing.get_status()
+            if status["mode"] != "expired":
                 return run_streamlit_app()
 
     # Within trial

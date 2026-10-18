@@ -288,9 +288,7 @@ coverage_pct = (captured / route) * 100
 
 **Map Visualization**:
 - **Imagery View**: Satellite photos (`!3m1!1e3`)
-- **Raw Map View**: Standard road map (`!3m1!1e2`)
-- **Markers**: Start (green) + End (red)
-- **Route**: Polyline connecting GPS points
+- **Markers**: A marker for each geotagged data item, plus start and end markers
 
 **Area Name Resolution**:
 - Uses Nominatim OpenStreetMap API

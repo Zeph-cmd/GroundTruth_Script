@@ -45,6 +45,8 @@ access_codes.txt
 .lic
 *.lic
 .used_codes
+license_private_key.pem
+licenses.db
 
 # ===== PyInstaller / frozen build =====
 dist/

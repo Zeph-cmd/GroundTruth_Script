@@ -17,3 +17,9 @@ pandas>=2.0.0
 numpy>=1.24.0
 plotly>=5.15.0
 folium>=0.15.0
+
+# Licensing (ed25519 activation-code verification)
+cryptography>=42.0.0
+
+# AI Assistant (Botpress Chat API)
+requests>=2.31.0
