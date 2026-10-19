@@ -57,8 +57,13 @@ app.py (Main UI)
 
 | File | Purpose | Lines |
 |------|---------|-------|
-| `app.py` | Main Streamlit UI (1,183 lines) | All UI, routing, state management |
+| `app.py` | Main Streamlit UI (all UI, routing, state management) | All UI, incl. AI-assistant chat, usage cards, External View |
+| `launcher.py` | Launch gate (Tk dialogs): trial countdown, expired/locked, **Deactivated (kill switch)**, activation code entry, Get Device ID, developer contact | Runs before the server starts |
+| `licensing.py` | Device fingerprint (`GT-XXXX-XXXX-XXXX`), ed25519 activation-code verification, HMAC-sealed trial state (3 stores), AI-usage quota, remote kill-switch check | `get_status()`, `check_kill_status()`, `get_ai_usage()`, `consume_ai_use()` |
 | `check_gpu.py` | GPU capability checker | Diagnostic utility |
+| `build.bat` | PyInstaller onefile build → `dist\GroundTruth.exe` | Distribution |
+| `groundtruth.spec` | PyInstaller spec (bundles `app.py`, `utils/`, weights, `audit_config.json`) | No secrets bundled |
+| `ACTIVATE_A_CLIENT.txt` | Copy-paste CLI commands: issue codes + kill-switch usage | Seller-side cheat-sheet |
 
 ### Utils Package (`utils/`)
 
@@ -75,10 +80,12 @@ app.py (Main UI)
 | `yolo_detector.py` | AI object detection | `detect_objects()` |
 | `image_enhancer.py` | Image quality boost | `get_enhanced_image_path()` |
 | `image_loader.py` | Image discovery | `get_trip_images()` |
-| `share_export.py` | Export functions | `export_selected_trip()`, `export_full_dataset()` |
+| `share_export.py` | Export functions | `export_full_dataset()` (UI shows a single "Export" button) |
 | `exporter.py` | CSV/JSON/ZIP export | `export_trip_csv()`, `export_trip_json()` |
 | `audit_logger.py` | Security audit trail | `log_audit_event()`, `verify_audit_password()` |
 | `ai_detector.py` | Mock detector (dev) | `detect_road_objects()` |
+| `ai_assistant.py` | Botpress Webchat REST client (subscriber AI chat) | `is_configured()`, `send_question()` |
+| `godseye.py` | GodsEYE external dashboard link builder | `build_dashboard_url()` |
 
 ### Configuration Files
 
@@ -491,3 +498,58 @@ User uploads .rvtrip
 ┌───────────────────┐
 │  Store in         │
 │  session_state    │
+└───────────────────┘
+
+---
+
+## Licensing, Trials & Kill Switch
+
+### Trial
+- Every new device gets a **15-day free trial** on first launch (no internet needed).
+- State is stored redundantly in **3 HMAC-sealed stores** (hidden `%APPDATA%\GroundTruth\.lic`, `%LOCALAPPDATA%\GroundTruth\gtstate.bin`, HKCU registry `Software\GroundTruth\State_v1`). Earliest start date wins; deleting one store does not reset the trial. Clock rollback is guarded (last-seen date is remembered).
+
+### Subscriptions
+- Paid plans: **30 days** and **1 year**, unlocked with an **ed25519-signed activation code** bound to the device ID (`GT-XXXX-XXXX-XXXX`).
+- Codes are issued with `tools/license_issuer.py` (records every sale in `licenses.db`); the exact commands live in `ACTIVATE_A_CLIENT.txt`.
+- The signing key `license_private_key.pem` stays on the developer machine only (gitignored, never bundled into the exe).
+
+### Remote kill switch (per-device revocation)
+- A signed JSON file `docs/killlist.json` is hosted on GitHub Pages:
+  `https://zeph-cmd.github.io/GroundTruth_Script/killlist.json`
+- The app checks it **at launch** and re-checks **at most every 10 minutes** while running (`licensing.check_kill_status()`).
+- Matching is by **device ID first, then license serial** — revoking one device never affects others; revoking a serial disables that subscription only.
+- The list is **ed25519-signed with the same key as activation codes**; clients cannot forge or edit it. The last-known-good list is cached (HMAC-sealed), so a killed device stays dead even offline.
+- A revoked device shows a "Deactivated" window with Get Device ID + developer contact (website zephobed.me, Phone/WhatsApp 0257711831) and cannot be revived with a new code — only by the developer removing the entry and pushing.
+- Seller commands (see `ACTIVATE_A_CLIENT.txt`):
+  `python tools/killlist_tool.py --revoke --device GT-XXXX-XXXX-XXXX --reason "why"` then `git add docs/killlist.json && git commit -m killswitch && git push`
+  (`--restore` to un-kill, `--list` to view.)
+
+---
+
+## AI Assistant (Botpress)
+
+- Available to **active subscribers only** (trial/expired users see no chat).
+- UI: a floating robot button (bottom-right) toggles the chat panel; the sidebar shows a prominent usage card ("N questions left").
+- Backend: `utils/ai_assistant.py` talks to the Botpress agent's **Webchat REST API** (`https://webchat.botpress.cloud/<client-id>`); the client ID is a constant in that file.
+- Quota is **per license period** (not per day) via `AI_PLAN_LIMITS` in `licensing.py`: **30D plan = 5 questions, 1Y plan = 30 questions**. Adjust the constants to change limits.
+- A question is counted **only after a successful bot reply**; network errors do not consume quota.
+- Usage is stored in the same sealed stores as the trial, bound to the license serial — a new activation code (new serial) resets the quota automatically.
+- The Botpress side holds the product knowledge (DOCUMENTATION.md + WORTHY docs uploaded to the agent's Knowledge, plus FAQ pairs and user memory).
+
+---
+
+## External Views (sidebar)
+
+- **Open God's Eye Dashboard** — opens godseye.network with preselected layers (`utils/godseye.py: build_dashboard_url()`). Whatever account is logged into the browser is what displays; GroundTruth sends no data.
+- **Live Cybermap** — opens Kaspersky's Cyberthreat live map (`https://cybermap.kaspersky.com`) in the browser.
+- Both are plain external link buttons under **External View** in the left panel; no data leaves the app.
+
+---
+
+## Build & Distribution (exe)
+
+- `build.bat` produces a PyInstaller **onefile** exe: `dist\GroundTruth.exe` (~444 MB). Clients double-click it; it self-hosts the UI on `127.0.0.1:8502` and opens the browser (no Python/npm needed). Dev mode: `npm start` / `start.bat` on port 8501.
+- Bundled: `app.py`, the whole `utils/` package (including `yolo_detector`/`ai_detector` and all weights), root `yolov8m.pt`/`yolov8n.pt`, `audit_config.json`. **Never bundled:** `license_private_key.pem`, `licenses.db`, `tools/`, `.lic` files (all gitignored).
+- After **any** code change, rebuild the exe so distributed copies stay current.
+- The exe is unsigned, so Windows SmartScreen and some AVs may warn; a VirusTotal scan of a recent build scored **2/62 (generic PyInstaller false positives)**. Long-term fix: an Authenticode code-signing certificate.
+- Distribution: send `dist\GroundTruth.exe` only (WhatsApp as document, or Google Drive for corporate clients). Never share the project folder.

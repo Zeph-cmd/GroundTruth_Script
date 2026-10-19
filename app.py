@@ -714,6 +714,11 @@ with st.sidebar:
         build_dashboard_url(),
         use_container_width=True,
     )
+    st.link_button(
+        "Live Cybermap",
+        "https://cybermap.kaspersky.com",
+        use_container_width=True,
+    )
 
     # Show verification banner if .rvtrip was imported
     if st.session_state.get("verification_result"):
