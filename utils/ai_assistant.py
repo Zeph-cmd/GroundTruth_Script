@@ -74,13 +74,37 @@ def _save_session(session: dict) -> None:
         pass
 
 
-def _ensure_session() -> dict:
-    """Create the Botpress user + conversation once; reuse on later runs."""
+def _ensure_session(force_new_conversation: bool = False) -> dict:
+    """Create the Botpress user + conversation once; reuse on later runs.
+
+    force_new_conversation: create a fresh conversation (same user). Used to
+    escape conversations stuck in 'transferred to human' state, where the
+    bot never replies again.
+    """
     session = _load_session()
-    if session:
+    if session and not force_new_conversation:
         return session
 
     base = _base_url()
+
+    if session and force_new_conversation:
+        # Reuse the existing user key; just open a new conversation.
+        try:
+            resp = requests.post(
+                f"{base}/conversations",
+                headers={"x-user-key": session["user_key"]},
+                json={},
+                timeout=_REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            conversation_id = resp.json().get("conversation", {}).get("id")
+            if conversation_id:
+                session["conversation_id"] = conversation_id
+                _save_session(session)
+                return session
+        except Exception:
+            pass  # fall through to full re-create
+
     try:
         resp = requests.post(f"{base}/users", json={}, timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
@@ -128,12 +152,25 @@ def _message_text(message: dict) -> str | None:
     return None
 
 
-def send_question(question: str) -> list[str]:
-    """Send a question to the bot and wait for its reply. Returns reply texts."""
+HANDOFF_MARKERS = (
+    "transferred to a human",
+    "human agent",
+    "human assistance",
+    "transferred to human",
+)
+
+
+def send_question(question: str, _retried: bool = False) -> list[str]:
+    """Send a question to the bot and wait for its reply. Returns reply texts.
+
+    If the conversation is dead (bot silent or escalated to a human handoff),
+    the question is automatically retried once in a FRESH conversation - the
+    bot never replies again inside a handed-off conversation.
+    """
     if not is_configured():
         raise AIAssistantError("The AI assistant is being configured. Contact the developer.")
 
-    session = _ensure_session()
+    session = _ensure_session(force_new_conversation=_retried)
     base = _base_url()
     headers = {"x-user-key": session["user_key"]}
 
@@ -153,14 +190,21 @@ def send_question(question: str) -> list[str]:
     except requests.RequestException:
         raise AIAssistantError("Could not reach the AI service. Check your internet connection and try again.")
 
-    replies = _wait_for_replies(session, headers)
-    if not replies:
-        raise AIAssistantError("The assistant did not respond in time. Try again in a moment.")
-    return replies
+    replies, handed_off = _wait_for_replies(session, headers)
+    if replies:
+        return replies
+    if not _retried:
+        # Silent bot or human-handoff dead end: retry in a new conversation.
+        return send_question(question, _retried=True)
+    raise AIAssistantError("The assistant did not respond in time. Try again in a moment.")
 
 
-def _wait_for_replies(session: dict, headers: dict) -> list[str]:
-    """Poll the conversation until the bot replies after our question."""
+def _wait_for_replies(session: dict, headers: dict) -> tuple[list[str], bool]:
+    """Poll the conversation until the bot replies after our question.
+
+    Returns (replies, handed_off). handed_off=True means the bot escalated
+    the conversation to a human - no further replies will ever arrive there.
+    """
     known_ids = set()
     our_user_id = session.get("user_id")
 
@@ -186,11 +230,15 @@ def _wait_for_replies(session: dict, headers: dict) -> list[str]:
             if our_user_id and msg.get("userId") == our_user_id:
                 continue
             text = _message_text(msg)
-            if text:
-                replies.append(text)
+            if not text:
+                continue
+            lowered = text.lower()
+            if any(marker in lowered for marker in HANDOFF_MARKERS):
+                return [], True
+            replies.append(text)
         if replies:
-            return replies
-    return []
+            return replies, False
+    return [], False
 
 
 def _list_messages(session: dict, headers: dict) -> list[dict]:
