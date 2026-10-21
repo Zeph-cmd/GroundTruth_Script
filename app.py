@@ -1284,16 +1284,25 @@ else:
 
         st.session_state.gallery_page = min(st.session_state.gallery_page, total_pages)
 
-        pagination_columns = st.columns([1, 1, 6])
-        if pagination_columns[0].button("Previous", disabled=st.session_state.gallery_page <= 1, key="gallery_previous"):
+        pagination_columns = st.columns([1, 1, 2, 4])
+        show_all = pagination_columns[2].toggle("Show all", key="gallery_show_all")
+        if pagination_columns[0].button("Previous", disabled=st.session_state.gallery_page <= 1 or show_all, key="gallery_previous"):
             st.session_state.gallery_page -= 1
             st.rerun()
-        if pagination_columns[1].button("Next", disabled=st.session_state.gallery_page >= total_pages, key="gallery_next"):
+        if pagination_columns[1].button("Next", disabled=st.session_state.gallery_page >= total_pages or show_all, key="gallery_next"):
             st.session_state.gallery_page += 1
             st.rerun()
+        pagination_columns[3].caption(
+            f"Page {st.session_state.gallery_page} of {total_pages} - {len(filtered_records)} images"
+            if not show_all
+            else f"Showing all {len(filtered_records)} images"
+        )
 
-        start_index = (st.session_state.gallery_page - 1) * page_size
-        end_index = start_index + page_size
+        if show_all:
+            start_index, end_index = 0, len(filtered_records)
+        else:
+            start_index = (st.session_state.gallery_page - 1) * page_size
+            end_index = start_index + page_size
         visible_records = filtered_records[start_index:end_index]
 
         if not visible_records:
