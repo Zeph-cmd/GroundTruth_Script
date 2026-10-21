@@ -1035,6 +1035,7 @@ else:
             else:
                 map_state = st_folium(
                     trip_map,
+                    width=1500,
                     height=720,
                     key=f"trip_map_{selected_trip_path.name}",
                 )
