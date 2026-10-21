@@ -236,6 +236,88 @@ def _haversine_km(first_lat: float, first_lon: float, second_lat: float, second_
     return 2 * radius_km * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+STALE_FIX_SPEED_KMH = 150.0
+
+
+def _point_epoch(point: dict[str, Any]) -> float | None:
+    """Timestamp as epoch seconds, or None when unusable for speed math."""
+    value = point.get("timestamp")
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        normalized = value.strip().replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            try:
+                return float(normalized)
+            except ValueError:
+                return None
+    return None
+
+
+def _split_stale_fixes_once(ordered_points: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """One pass: flag points whose jump to the NEXT point is impossibly fast.
+
+    A stale GPS fix (leftover lock from a previous location) shows up as a
+    large jump that immediately snaps back - implied ground speed far above
+    any real travel. Devices often freeze on the stale fix for several
+    captures, so the whole identical-coordinate run behind a flagged point is
+    flagged with it. Only map rendering is affected; no data is removed.
+    """
+    if len(ordered_points) < 2:
+        return list(ordered_points), []
+
+    route_points: list[dict[str, Any]] = []
+    stale_fixes: list[dict[str, Any]] = []
+    flagged_flags = [False] * len(ordered_points)
+
+    for index, point in enumerate(ordered_points[:-1]):
+        nxt = ordered_points[index + 1]
+        distance_km = _haversine_km(
+            float(point["latitude"]), float(point["longitude"]),
+            float(nxt["latitude"]), float(nxt["longitude"]),
+        )
+        start_ts = _point_epoch(point)
+        end_ts = _point_epoch(nxt)
+        delta_hours = ((end_ts - start_ts) / 3600.0) if (start_ts is not None and end_ts is not None) else None
+        if delta_hours is not None and delta_hours > 0 and (distance_km / delta_hours) > STALE_FIX_SPEED_KMH:
+            flagged_flags[index] = True
+            # The frozen-fix run: identical coordinates trailing this point.
+            walk = index - 1
+            while walk >= 0 and not flagged_flags[walk]:
+                prev = ordered_points[walk]
+                if _haversine_km(
+                    float(prev["latitude"]), float(prev["longitude"]),
+                    float(point["latitude"]), float(point["longitude"]),
+                ) * 1000.0 > 30.0:
+                    break
+                flagged_flags[walk] = True
+                walk -= 1
+
+    for index, point in enumerate(ordered_points[:-1]):
+        if flagged_flags[index]:
+            stale_fixes.append(point)
+        else:
+            route_points.append(point)
+    route_points.append(ordered_points[-1])
+    return route_points, stale_fixes
+
+
+def _split_stale_fixes(ordered_points: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Repeat the stale-fix pass until stable (handles chained stale fixes)."""
+    route_points = list(ordered_points)
+    all_stale: list[dict[str, Any]] = []
+    for _ in range(5):
+        route_points, stale = _split_stale_fixes_once(route_points)
+        if not stale:
+            break
+        all_stale.extend(stale)
+    return route_points, all_stale
+
+
 def _estimate_distance_km(points: list[dict[str, Any]]) -> float:
     distance = 0.0
     for previous, current in zip(points, points[1:]):
@@ -332,6 +414,9 @@ def build_trip_map(
         valid_points,
         key=lambda point: (_timestamp_sort_key(point.get("timestamp")), str(point.get("filename") or "").lower()),
     )
+    route_points, stale_fixes = _split_stale_fixes(ordered_points)
+    if not route_points:
+        route_points = list(ordered_points)
 
     average_latitude = sum(float(point["latitude"]) for point in ordered_points) / len(ordered_points)
     average_longitude = sum(float(point["longitude"]) for point in ordered_points) / len(ordered_points)
@@ -354,16 +439,16 @@ def build_trip_map(
         ).add_to(map_object)
 
     if show_route:
-        route_points = _sample_points(ordered_points, route_sample_limit)
+        route_line_points = _sample_points(route_points, route_sample_limit)
         folium.PolyLine(
-            locations=[[float(point["latitude"]), float(point["longitude"])] for point in route_points],
+            locations=[[float(point["latitude"]), float(point["longitude"])] for point in route_line_points],
             color="#1f77b4",
             weight=4,
             opacity=0.8,
         ).add_to(map_object)
 
-    rendered_points = _sample_points(ordered_points, marker_sample_limit) if show_markers else []
-    sampled = len(rendered_points) < len(ordered_points)
+    rendered_points = _sample_points(route_points, marker_sample_limit) if show_markers else []
+    sampled = len(rendered_points) < len(route_points)
 
     if show_markers:
         marker_group = folium.FeatureGroup(name="Image Markers", show=True)
@@ -392,8 +477,8 @@ def build_trip_map(
         marker_group.add_to(map_object)
 
     # Add start and end markers with offset to prevent overlap
-    start_point = ordered_points[0]
-    end_point = ordered_points[-1]
+    start_point = route_points[0]
+    end_point = route_points[-1]
     start_lat, start_lon = float(start_point["latitude"]), float(start_point["longitude"])
     end_lat, end_lon = float(end_point["latitude"]), float(end_point["longitude"])
 
@@ -420,21 +505,43 @@ def build_trip_map(
             icon=folium.Icon(color="red", icon="stop", prefix="fa"),
         ).add_to(map_object)
 
+    # Stale GPS fixes: kept visible (orange) but excluded from route/bounds.
+    for stale_point in stale_fixes:
+        folium.CircleMarker(
+            location=[float(stale_point["latitude"]), float(stale_point["longitude"])],
+            tooltip=f"Stale GPS fix (excluded from route): {stale_point.get('filename')}",
+            popup=folium.Popup(
+                f"<strong>Stale GPS fix</strong><br>"
+                f"<strong>Filename:</strong> {stale_point.get('filename')}<br>"
+                f"This point implies impossible movement speed and was likely "
+                f"recorded before the device acquired a fresh GPS lock. "
+                f"Excluded from the route drawing only - the data is kept.",
+                max_width=320,
+            ),
+            radius=8,
+            color="#ffffff",
+            weight=2,
+            fill=True,
+            fill_color="#ff8800",
+            fill_opacity=1.0,
+        ).add_to(map_object)
+
     bounds = [
-        [min(float(point["latitude"]) for point in ordered_points), min(float(point["longitude"]) for point in ordered_points)],
-        [max(float(point["latitude"]) for point in ordered_points), max(float(point["longitude"]) for point in ordered_points)],
+        [min(float(point["latitude"]) for point in route_points), min(float(point["longitude"]) for point in route_points)],
+        [max(float(point["latitude"]) for point in route_points), max(float(point["longitude"]) for point in route_points)],
     ]
     map_object.fit_bounds(bounds)
 
     # Get area name from start coordinates
     area_name = reverse_geocode(start_lat, start_lon)
 
-    # Compute coverage metrics
-    coverage = _compute_coverage(ordered_points)
+    # Compute coverage metrics (physically plausible points only)
+    coverage = _compute_coverage(route_points)
 
     summary = {
         "total_points": len(ordered_points),
-        "estimated_distance_km": round(_estimate_distance_km(ordered_points), 2),
+        "stale_fixes": len(stale_fixes),
+        "estimated_distance_km": round(_estimate_distance_km(route_points), 2),
         "start_coordinates": (start_lat, start_lon),
         "end_coordinates": (end_lat, end_lon),
         "area_name": area_name,

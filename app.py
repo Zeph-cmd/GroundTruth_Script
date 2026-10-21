@@ -1035,9 +1035,16 @@ else:
             else:
                 map_state = st_folium(
                     trip_map,
-                    height=500,
+                    height=720,
                     key=f"trip_map_{selected_trip_path.name}",
                 )
+
+                stale_count = map_result["summary"].get("stale_fixes", 0)
+                if stale_count:
+                    st.warning(
+                        f"{stale_count} stale GPS fix(es) excluded from the route (orange markers) — "
+                        "likely recorded before the device acquired a fresh GPS lock. The data is kept."
+                    )
 
                 st.markdown("**Trip Summary**")
                 summary_columns = st.columns(4)
