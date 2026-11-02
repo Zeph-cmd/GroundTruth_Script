@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Payment Successful - GroundTruth</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">
+      <span class="logo-icon">G</span>
+      <span>GroundTruth</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="index.html">Home</a></li>
+      <li><a href="feedback.html">Feedback</a></li>
+    </ul>
+  </nav>
+
+  <main class="container">
+    <section class="checkout-card success-card">
+      <div id="loading-state">
+        <h1>Finalizing your license...</h1>
+        <p>Please wait while we generate your activation code.</p>
+      </div>
+
+      <div id="success-state" class="hidden">
+        <div class="success-icon">✓</div>
+        <h1>Payment successful!</h1>
+        <p class="checkout-sub">Your activation code works on <strong>1 Windows PC + unlimited Android devices</strong>.</p>
+
+        <div class="code-box">
+          <label>Your activation code</label>
+          <div class="code-value" id="license-code">—</div>
+          <button class="btn btn-secondary" id="copy-code-btn">Copy code</button>
+        </div>
+
+        <div class="download-section">
+          <h3>Download GroundTruth</h3>
+          <div class="download-grid">
+            <a id="download-exe" href="#" class="download-card" target="_blank">
+              <div class="download-icon">🖥️</div>
+              <div>
+                <strong>GroundTruth Explorer</strong>
+                <p>Windows .exe (~423 MB)</p>
+              </div>
+            </a>
+            <a id="download-apk" href="#" class="download-card" target="_blank">
+              <div class="download-icon">📱</div>
+              <div>
+                <strong>GroundTruth Vision</strong>
+                <p>Android .apk (~22 MB)</p>
+              </div>
+            </a>
+          </div>
+        </div>
+
+        <div class="notice-box">
+          <h3>Important</h3>
+          <ul>
+            <li>Enter the same activation code in both the Windows app and the Android app.</li>
+            <li>The code can only activate <strong>one PC</strong>. If you change PCs, contact support.</li>
+            <li>Internet is required only for the first activation. After that, both apps work offline until expiry.</li>
+            <li>Windows SmartScreen / Android "unknown source" warnings are normal because we are not yet enrolled in those programs.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div id="error-state" class="hidden">
+        <div class="alert alert-error">
+          <h2>Could not retrieve your license</h2>
+          <p id="error-message">Please contact support with your payment reference.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>GroundTruth by Zephaniah Dopaak · <a href="https://zephobed.me" target="_blank">zephobed.me</a> · WhatsApp: 0257711831</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

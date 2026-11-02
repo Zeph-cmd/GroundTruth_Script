@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Download GroundTruth</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://js.paystack.co/v1/inline.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">
+      <span class="logo-icon">G</span>
+      <span>GroundTruth</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="index.html#features">Features</a></li>
+      <li><a href="index.html#pricing">Pricing</a></li>
+      <li><a href="feedback.html">Feedback</a></li>
+      <li><a href="download.html" class="btn btn-primary">Get GroundTruth</a></li>
+    </ul>
+  </nav>
+
+  <main class="container">
+    <section class="checkout-card">
+      <h1>Get GroundTruth</h1>
+      <p class="checkout-sub">Answer a few questions, complete payment, and receive your activation code + download links instantly.</p>
+
+      <form id="checkout-form">
+        <div class="form-section">
+          <h3>1. Tell us about you</h3>
+          <div class="form-group">
+            <label for="country">Your country *</label>
+            <select id="country" name="country" required>
+              <option value="">Select country</option>
+              <option value="Ghana">Ghana</option>
+              <option value="Nigeria">Nigeria</option>
+              <option value="South Africa">South Africa</option>
+              <option value="Kenya">Kenya</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="purpose">Why do you need GroundTruth? *</label>
+            <textarea id="purpose" name="purpose" rows="3" placeholder="e.g. road condition surveys for our district assembly" required></textarea>
+          </div>
+
+          <div class="form-group">
+            <label for="email">Email address *</label>
+            <input type="email" id="email" name="email" placeholder="you@example.com" required />
+            <p class="field-hint">We only use this to send your activation code and receipt. No spam.</p>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h3>2. Choose your plan</h3>
+          <div class="plan-options">
+            <label class="plan-option">
+              <input type="radio" name="plan" value="30D" required />
+              <span class="plan-label">Monthly — $30</span>
+            </label>
+            <label class="plan-option">
+              <input type="radio" name="plan" value="1Y" required />
+              <span class="plan-label">Yearly — $356</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="form-section notice-box">
+          <h3>Before you download</h3>
+          <ul>
+            <li><strong>Windows:</strong> GroundTruth.exe is not signed with Microsoft SmartScreen yet, so Windows may show a "Windows protected your PC" or antivirus warning. Click <em>More info → Run anyway</em>. The file is verified clean by VirusTotal (57 of 59 engines, including Microsoft, Google, and Kaspersky).</li>
+            <li><strong>Android:</strong> The APK is not from the Play Store. Android will warn you about installing apps from unknown sources. Tap <em>Install anyway</em> or allow <em>Install unknown apps</em> for your browser.</li>
+          </ul>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-lg btn-block" id="pay-btn">Pay & get activation code</button>
+      </form>
+
+      <div id="checkout-error" class="alert alert-error hidden"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>GroundTruth by Zephaniah Dopaak · <a href="https://zephobed.me" target="_blank">zephobed.me</a> · WhatsApp: 0257711831</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="main.js"></script>
+  <script>
+    // Pre-select plan from URL
+    const params = new URLSearchParams(window.location.search);
+    const plan = params.get('plan');
+    if (plan) {
+      const input = document.querySelector(`input[name="plan"][value="${plan}"]`);
+      if (input) input.checked = true;
+    }
+  </script>
+</body>
+</html>

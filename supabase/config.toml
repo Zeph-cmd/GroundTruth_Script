@@ -1,0 +1,19 @@
+project_id = "kumtik"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "groundtruth"]
+
+[db]
+port = 54322
+
+[functions]
+[functions.paystack-webhook]
+verify_jwt = false
+
+[functions.activate-license]
+verify_jwt = false
+
+[functions.submit-feedback]
+verify_jwt = false

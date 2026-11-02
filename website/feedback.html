@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Feedback - GroundTruth</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">
+      <span class="logo-icon">G</span>
+      <span>GroundTruth</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="index.html">Home</a></li>
+      <li><a href="index.html#pricing">Pricing</a></li>
+      <li><a href="download.html" class="btn btn-primary">Get GroundTruth</a></li>
+    </ul>
+  </nav>
+
+  <main class="container">
+    <section class="checkout-card">
+      <h1>Share your feedback</h1>
+      <p class="checkout-sub">Tell us what you love, what we can improve, or any ideas you have.</p>
+
+      <form id="feedback-form">
+        <div class="form-group">
+          <label for="feedback-type">Type *</label>
+          <select id="feedback-type" name="type" required>
+            <option value="">Select type</option>
+            <option value="praise">Praise</option>
+            <option value="criticism">Criticism</option>
+            <option value="suggestion">Suggestion</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="feedback-country">Country</label>
+          <input type="text" id="feedback-country" name="country" placeholder="Ghana" />
+        </div>
+
+        <div class="form-group">
+          <label for="feedback-email">Email (optional)</label>
+          <input type="email" id="feedback-email" name="email" placeholder="you@example.com" />
+        </div>
+
+        <div class="form-group">
+          <label for="feedback-message">Your message *</label>
+          <textarea id="feedback-message" name="message" rows="5" placeholder="Your thoughts..." required></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-lg btn-block" id="feedback-btn">Send feedback</button>
+      </form>
+
+      <div id="feedback-success" class="alert alert-success hidden">
+        <h3>Thank you!</h3>
+        <p>Your feedback has been received.</p>
+      </div>
+      <div id="feedback-error" class="alert alert-error hidden"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>GroundTruth by Zephaniah Dopaak · <a href="https://zephobed.me" target="_blank">zephobed.me</a> · WhatsApp: 0257711831</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

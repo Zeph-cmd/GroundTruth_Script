@@ -47,6 +47,10 @@ _DATE_EPOCH = date(2026, 1, 1)
 # Plans supported by the issuer. value = days of access.
 PLANS = {"30D": 30, "1Y": 365}
 
+# Supabase online activation endpoint for shared license codes (1 PC + unlimited Android).
+# New codes verify signature locally, then call this endpoint to claim a PC seat.
+SUPABASE_ACTIVATE_URL = "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/activate-license"
+
 # Ed25519 PUBLIC key (raw 32 bytes, base32). Generated once by
 # tools/license_keygen.py on the seller machine. The private key NEVER
 # ships inside the exe - codes signed by it are the only way to unlock.
@@ -56,9 +60,11 @@ LICENSE_PUBLIC_KEY_B32 = "XEWD6QDGOU7YTJ4GGGV2CUXY6A6FT6I4EL2B34HZVX37XTHAJTLA" 
 # its job is to make casual hand-editing of the state stores fail.
 _STATE_HMAC_KEY = b"GT-state-seal-v1-8f42c1d9a7b34e5f"
 
-# Code payload layout (12 bytes):
-#   device_hash 7 | plan 1 (0=30D, 1=1Y) | expiry_days_le16 | serial 2
-_PAYLOAD_LEN = 12
+# Code payload layouts:
+#   OLD (device-bound, 12 bytes): device_hash 7 | plan 1 | expiry_days_le16 | serial 2
+#   NEW (shared, 7 bytes):        serial 2 | plan 1 | expiry_days_le16 | pc_seats 1 | android_seats 1
+_OLD_PAYLOAD_LEN = 12
+_NEW_PAYLOAD_LEN = 7
 _SIG_LEN = 64
 
 
@@ -365,6 +371,11 @@ def _decode_code(code: str) -> tuple[bytes, bytes]:
     cleaned = code.strip().upper().replace(" ", "")
     if cleaned.startswith("GT-"):
         cleaned = cleaned[3:]
+    # Shared codes are formatted as GT-<PLAN>-<base32 chunks>, e.g. GT-30D-6ZVA-...
+    for plan_label in ("30D-", "1Y-"):
+        if cleaned.startswith(plan_label):
+            cleaned = cleaned[len(plan_label):]
+            break
     cleaned = cleaned.replace("-", "")
     if len(cleaned) < 20:
         raise LicensingError("Invalid code.")
@@ -373,15 +384,60 @@ def _decode_code(code: str) -> tuple[bytes, bytes]:
         raw = base64.b32decode(padded)
     except Exception:
         raise LicensingError("Invalid code.")
-    if len(raw) < _PAYLOAD_LEN + _SIG_LEN:
-        raise LicensingError("Invalid code.")
-    return raw[:_PAYLOAD_LEN], raw[_PAYLOAD_LEN : _PAYLOAD_LEN + _SIG_LEN]
+    if len(raw) == _OLD_PAYLOAD_LEN + _SIG_LEN:
+        return raw[:_OLD_PAYLOAD_LEN], raw[_OLD_PAYLOAD_LEN : _OLD_PAYLOAD_LEN + _SIG_LEN]
+    if len(raw) == _NEW_PAYLOAD_LEN + _SIG_LEN:
+        return raw[:_NEW_PAYLOAD_LEN], raw[_NEW_PAYLOAD_LEN : _NEW_PAYLOAD_LEN + _SIG_LEN]
+    raise LicensingError("Invalid code.")
 
 
-def verify_activation_code(code: str) -> dict:
-    """Validate a signed activation code for THIS device.
+def _plan_name(plan_byte: int, shared: bool = False) -> str | None:
+    if shared:
+        if plan_byte == 0x01:
+            return "30D"
+        if plan_byte == 0x02:
+            return "1Y"
+    else:
+        if plan_byte == 0:
+            return "30D"
+        if plan_byte == 1:
+            return "1Y"
+    return None
 
-    Returns {'serial', 'plan', 'expiry' (iso date string)} on success.
+
+def _online_activate(code: str, device_type: str, fingerprint: str) -> dict:
+    """Claim a seat for shared (new-format) codes. Returns server response."""
+    try:
+        import urllib.request
+
+        payload = json.dumps({
+            "code": code,
+            "device_type": device_type,
+            "device_fingerprint": fingerprint,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            SUPABASE_ACTIVATE_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtemltZHliZndiZHdramx2ZWt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzA0OTI4MDAsImV4cCI6MjA0NjA2ODgwMH0.placeholder",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return {"status": "network_error", "detail": str(exc)}
+
+
+def verify_activation_code(code: str, device_type: str = "pc") -> dict:
+    """Validate a signed activation code.
+
+    Old format: device-bound (single PC only).
+    New format: shared code (1 PC + unlimited Android). Verifies signature,
+    then calls the Supabase seat endpoint to claim a PC/Android seat.
+
+    Returns {'serial', 'plan', 'expiry' (iso date string), 'shared': bool}.
     Raises LicensingError with a user-friendly message otherwise.
     """
     payload, signature = _decode_code(code)
@@ -395,15 +451,52 @@ def verify_activation_code(code: str) -> dict:
     except LicensingError:
         raise
 
-    device_hash = payload[0:7]
-    if device_hash != _device_hash_bytes()[:7]:
-        raise LicensingError("This code was issued for a different device.")
+    if len(payload) == _OLD_PAYLOAD_LEN:
+        # Legacy device-bound format
+        device_hash = payload[0:7]
+        if device_hash != _device_hash_bytes()[:7]:
+            raise LicensingError("This code was issued for a different device.")
+        plan_byte = payload[7]
+        expiry_days = int.from_bytes(payload[8:10], "little")
+        serial = payload[10:12].hex().upper()
+        shared = False
+    elif len(payload) == _NEW_PAYLOAD_LEN:
+        # Shared format: serial 2 | plan 1 | expiry_days_le16 | pc_seats | android_seats
+        serial = payload[0:2].hex().upper()
+        plan_byte = payload[2]
+        expiry_days = int.from_bytes(payload[3:5], "little")
+        pc_seats = payload[5]
+        android_seats = payload[6]
+        shared = True
 
-    plan_byte = payload[7]
-    expiry_days = int.from_bytes(payload[8:10], "little")
-    serial = payload[10:12].hex().upper()
+        fingerprint = get_device_id() if device_type == "pc" else _android_fingerprint()
+        result = _online_activate(code, device_type, fingerprint)
+        status = result.get("status")
+        if status == "seat_taken":
+            raise LicensingError(
+                "This code has already been used on another PC. "
+                "Contact support to transfer it."
+            )
+        if status == "revoked":
+            raise LicensingError("This code has been deactivated. Contact support.")
+        if status == "expired":
+            raise LicensingError("This code has expired. Contact support.")
+        if status not in ("active", "network_error"):
+            raise LicensingError("Could not activate this code. Check your internet and try again.")
+        return {
+            "serial": serial,
+            "plan": _plan_name(plan_byte, shared=True) or "30D",
+            "expiry": (_DATE_EPOCH + timedelta(days=expiry_days)).isoformat(),
+            "shared": True,
+            "device_type": device_type,
+            "pc_seats": pc_seats,
+            "android_seats": android_seats,
+            "pending_online": status == "network_error",
+        }
+    else:
+        raise LicensingError("Invalid code.")
 
-    plan = "30D" if plan_byte == 0 else "1Y" if plan_byte == 1 else None
+    plan = _plan_name(plan_byte, shared=False)
     if plan is None:
         raise LicensingError("Invalid code.")
 
@@ -411,15 +504,21 @@ def verify_activation_code(code: str) -> dict:
     if expiry < date.today():
         raise LicensingError("This code has expired. Contact support.")
 
-    return {"serial": serial, "plan": plan, "expiry": expiry.isoformat()}
+    return {"serial": serial, "plan": plan, "expiry": expiry.isoformat(), "shared": shared}
 
 
-def activate(code: str) -> dict:
+def _android_fingerprint() -> str:
+    """Placeholder fingerprint for Android seat claims."""
+    return "android-placeholder"
+
+
+def activate(code: str, device_type: str = "pc") -> dict:
     """Verify a code and persist it as this machine's license."""
-    record = verify_activation_code(code)
+    record = verify_activation_code(code, device_type=device_type)
     state = _load_state()
     key = f"{record['serial']}|{record['expiry']}"
-    if key not in {f"{l.get('serial')}|{l.get('expiry')}" for l in state["licenses"]}:
+    existing_keys = {f"{l.get('serial')}|{l.get('expiry')}" for l in state["licenses"]}
+    if key not in existing_keys:
         state["licenses"].append(record)
     _save_state(state)
     return record
