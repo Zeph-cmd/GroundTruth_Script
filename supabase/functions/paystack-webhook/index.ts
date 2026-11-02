@@ -81,6 +81,7 @@ Deno.serve(async (req) => {
     const plan = (metadata.plan as string)?.toUpperCase();
     const country = (metadata.country as string) || "";
     const purpose = (metadata.purpose as string) || "";
+    const deviceId = String(metadata.device_id || "").toUpperCase();
 
     // Multiple apps share this Paystack account. Only process GroundTruth
     // payments (marked via metadata.product); silently ack everything else
@@ -94,6 +95,13 @@ Deno.serve(async (req) => {
 
     if (!ref || !plan) {
       return new Response(JSON.stringify({ error: "Missing reference or plan" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400,
+      });
+    }
+
+    if (!/^GT-[A-Z2-7]{4}(?:-[A-Z2-7]{4}){2}$/.test(deviceId)) {
+      return new Response(JSON.stringify({ error: "Missing or invalid Windows Device ID" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 400,
       });
@@ -118,7 +126,7 @@ Deno.serve(async (req) => {
     const { data: trial } = await supabase
       .schema("groundtruth")
       .from("payments")
-      .select("created_at")
+      .select("id, created_at")
       .eq("email", normalizedEmail)
       .eq("plan", "TRIAL")
       .eq("status", "trial")
@@ -141,6 +149,45 @@ Deno.serve(async (req) => {
         }, { onConflict: "paystack_ref" });
       if (rejectedErr) throw new Error("Failed to record blocked payment: " + rejectedErr.message);
       return new Response(JSON.stringify({ received: true, license_issued: false, reason: "trial_required" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200,
+      });
+    }
+
+    const { data: trialLicense } = await supabase
+      .schema("groundtruth")
+      .from("licenses")
+      .select("id")
+      .eq("payment_id", trial.id)
+      .maybeSingle();
+    let trialPc = null;
+    if (trialLicense) {
+      const { data } = await supabase
+        .schema("groundtruth")
+        .from("license_activations")
+        .select("device_fingerprint")
+        .eq("license_id", trialLicense.id)
+        .eq("device_type", "pc")
+        .eq("device_fingerprint", deviceId)
+        .maybeSingle();
+      trialPc = data;
+    }
+    if (!trial || !trialPc) {
+      const { error: rejectedErr } = await supabase
+        .schema("groundtruth")
+        .from("payments")
+        .upsert({
+          paystack_ref: ref,
+          email: normalizedEmail || null,
+          amount_cents: amount,
+          plan,
+          country,
+          purpose,
+          status: "trial_device_mismatch",
+          paystack_data: data,
+        }, { onConflict: "paystack_ref" });
+      if (rejectedErr) throw new Error("Failed to record blocked payment: " + rejectedErr.message);
+      return new Response(JSON.stringify({ received: true, license_issued: false, reason: "trial_device_mismatch" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 200,
       });
@@ -169,11 +216,20 @@ Deno.serve(async (req) => {
     const { data: existing } = await supabase
       .schema("groundtruth")
       .from("licenses")
-      .select("code")
+      .select("id, code")
       .eq("payment_id", payment.id)
       .maybeSingle();
 
     if (existing?.code) {
+      await supabase
+        .schema("groundtruth")
+        .from("license_activations")
+        .upsert({
+          license_id: existing.id,
+          device_type: "pc",
+          device_fingerprint: deviceId,
+          last_seen: new Date().toISOString(),
+        }, { onConflict: "license_id, device_type, device_fingerprint" });
       return new Response(JSON.stringify({ code: existing.code, already_issued: true }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 200,
@@ -187,7 +243,7 @@ Deno.serve(async (req) => {
     const signature = await signBytes(privateKeyPem, payload);
     const code = formatCode(serial, plan, signature, payload);
 
-    const { error: licErr } = await supabase
+    const { data: paidLicense, error: licErr } = await supabase
       .schema("groundtruth")
       .from("licenses")
       .insert({
@@ -198,10 +254,26 @@ Deno.serve(async (req) => {
         payment_id: payment.id,
         pc_seats_allowed: 1,
         android_seats_allowed: -1,
-      });
+      })
+      .select("id")
+      .single();
 
-    if (licErr) {
-      throw new Error("Failed to insert license: " + licErr.message);
+    if (licErr || !paidLicense) {
+      throw new Error("Failed to insert license: " + (licErr?.message || "unknown"));
+    }
+
+    const { error: activationErr } = await supabase
+      .schema("groundtruth")
+      .from("license_activations")
+      .upsert({
+        license_id: paidLicense.id,
+        device_type: "pc",
+        device_fingerprint: deviceId,
+        last_seen: new Date().toISOString(),
+      }, { onConflict: "license_id, device_type, device_fingerprint" });
+
+    if (activationErr) {
+      throw new Error("Failed to reserve the licensed PC: " + activationErr.message);
     }
 
     return new Response(JSON.stringify({ code, plan, expiry_date: expiryDate.toISOString().split("T")[0] }), {

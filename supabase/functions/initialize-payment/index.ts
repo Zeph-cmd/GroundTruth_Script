@@ -8,6 +8,7 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DEVICE_ID_RE = /^GT-[A-Z2-7]{4}(?:-[A-Z2-7]{4}){2}$/;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -21,14 +22,14 @@ Deno.serve(async (req) => {
     const secret = Deno.env.get("PAYSTACK_SECRET_KEY");
     if (!secret) throw new Error("Payment service is not configured");
 
-    const { email, plan, country, purpose } = await req.json();
+    const { email, plan, country, purpose, device_id } = await req.json();
     if (typeof email !== "string" || !EMAIL_RE.test(email.trim())) {
       return new Response(JSON.stringify({ error: "A valid email is required" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400,
       });
     }
-    if (!country || !purpose || !["30D", "1Y"].includes(plan)) {
-      return new Response(JSON.stringify({ error: "Invalid plan or missing questionnaire details" }), {
+    if (!country || !purpose || !["30D", "1Y"].includes(plan) || !DEVICE_ID_RE.test(String(device_id || ""))) {
+      return new Response(JSON.stringify({ error: "A valid Windows Device ID and questionnaire details are required" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400,
       });
     }
@@ -41,7 +42,7 @@ Deno.serve(async (req) => {
     const { data: trial } = await supabase
       .schema("groundtruth")
       .from("payments")
-      .select("created_at")
+      .select("id, created_at")
       .eq("email", emailNorm)
       .eq("plan", "TRIAL")
       .eq("status", "trial")
@@ -53,6 +54,32 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 403,
       });
     }
+    const { data: trialLicense } = await supabase
+      .schema("groundtruth")
+      .from("licenses")
+      .select("id")
+      .eq("payment_id", trial.id)
+      .maybeSingle();
+    if (!trialLicense) {
+      return new Response(JSON.stringify({ error: "Activate the free trial in GroundTruth Explorer before subscribing." }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 403,
+      });
+    }
+
+    const { data: trialPc } = await supabase
+      .schema("groundtruth")
+      .from("license_activations")
+      .select("device_fingerprint")
+      .eq("license_id", trialLicense.id)
+      .eq("device_type", "pc")
+      .eq("device_fingerprint", device_id)
+      .maybeSingle();
+    if (!trialPc) {
+      return new Response(JSON.stringify({ error: "The Device ID must match the Windows PC that used your free trial." }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 403,
+      });
+    }
+
     const trialEndsAt = getExpiryDate("TRIAL", new Date(trial.created_at)).getTime();
     if (Date.now() < trialEndsAt) {
       return new Response(JSON.stringify({
@@ -85,7 +112,7 @@ Deno.serve(async (req) => {
         currency: price.currency,
         reference: ref,
         callback_url: callbackUrl,
-        metadata: { product: "groundtruth", country, purpose, plan },
+        metadata: { product: "groundtruth", country, purpose, plan, device_id },
       }),
     });
     const result = await paystackResponse.json();

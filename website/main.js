@@ -36,6 +36,7 @@ async function startCheckout(formData) {
         plan: formData.plan,
         country: formData.country,
         purpose: formData.purpose,
+        device_id: formData.deviceId,
       }),
     });
     const data = await res.json();
@@ -125,6 +126,7 @@ function initCheckoutForm() {
       country: form.country.value.trim(),
       purpose: form.purpose.value.trim(),
       email: form.email.value.trim(),
+      deviceId: form.device_id.value.trim().toUpperCase(),
       plan: form.querySelector('input[name="plan"]:checked')?.value,
     };
 
@@ -135,6 +137,11 @@ function initCheckoutForm() {
 
     if (formData.plan === "TRIAL") {
       startFreeTrial(formData);
+      return;
+    }
+
+    if (!/^GT-[A-Z2-7]{4}(?:-[A-Z2-7]{4}){2}$/.test(formData.deviceId)) {
+      showError("checkout-error", "Enter the Windows Device ID shown in GroundTruth Explorer to subscribe.");
       return;
     }
 
