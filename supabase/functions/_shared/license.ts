@@ -3,10 +3,9 @@
 // serial(2) | plan(1) | expiry_days(2 LE) | pc_seats(1) | android_seats(1)
 
 import {
-  crypto,
   encodeBase64,
   decodeBase64,
-} from "https://deno.land/std@0.207.0/crypto/mod.ts";
+} from "https://deno.land/std@0.207.0/encoding/base64.ts";
 
 function base32Encode(bytes: Uint8Array): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -17,6 +16,11 @@ function base32Encode(bytes: Uint8Array): string {
   let out = "";
   for (let i = 0; i + 5 <= bits.length; i += 5) {
     out += alphabet[parseInt(bits.substring(i, i + 5), 2)];
+  }
+  const rem = bits.length % 5;
+  if (rem > 0) {
+    const last = bits.substring(bits.length - rem).padEnd(5, "0");
+    out += alphabet[parseInt(last, 2)];
   }
   return out;
 }
@@ -121,4 +125,11 @@ export function getExpiryDate(plan: string): Date {
   d.setDate(d.getDate() + days);
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+// Days are packed in the payload as days since this epoch (matches licensing.py _DATE_EPOCH).
+export const DATE_EPOCH_MS = Date.UTC(2026, 0, 1);
+
+export function daysSinceEpoch(d: Date): number {
+  return Math.round((d.getTime() - DATE_EPOCH_MS) / (1000 * 60 * 60 * 24));
 }

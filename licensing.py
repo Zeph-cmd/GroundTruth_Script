@@ -420,7 +420,7 @@ def _online_activate(code: str, device_type: str, fingerprint: str) -> dict:
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtemltZHliZndiZHdramx2ZWt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzA0OTI4MDAsImV4cCI6MjA0NjA2ODgwMH0.placeholder",
+                "apikey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtemltZHliZndiZHdramx2ZWt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwNjIwNDIsImV4cCI6MjA5MDYzODA0Mn0.PIDqi0nfXwZcSXp166hg3IO1Zle1JV__nAsbta_CTvU",
             },
             method="POST",
         )

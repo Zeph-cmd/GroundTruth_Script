@@ -1,12 +1,11 @@
-// GroundTruth Paystack webhook: verifies payment and issues a signed license code.
-
+// Test: full webhook without HMAC verification
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
 import {
   codePayloadToBytes,
-  bytesToHex,
   generateSerial,
   formatCode,
   getExpiryDate,
+  daysSinceEpoch,
   signBytes,
 } from "../_shared/license.ts";
 
@@ -32,25 +31,25 @@ Deno.serve(async (req) => {
       throw new Error("Missing environment secrets");
     }
 
-    // Verify Paystack signature header
-    const signature = req.headers.get("x-paystack-signature");
-    const body = await req.text();
-    if (signature) {
+    // Verify Paystack HMAC-SHA512 signature
+    const sigHeader = req.headers.get("x-paystack-signature");
+    const rawBody = await req.text();
+    if (sigHeader) {
       const encoder = new TextEncoder();
+      const keyData = encoder.encode(paystackSecret);
+      const bodyData = encoder.encode(rawBody);
       const key = await crypto.subtle.importKey(
         "raw",
-        encoder.encode(paystackSecret),
+        keyData,
         { name: "HMAC", hash: "SHA-512" },
         false,
         ["sign", "verify"]
       );
-      const sigBytes = hexToBytes(signature);
-      const valid = await crypto.subtle.verify(
-        "HMAC",
-        key,
-        sigBytes,
-        encoder.encode(body)
-      );
+      const sigBytes = new Uint8Array(sigHeader.length / 2);
+      for (let i = 0; i < sigHeader.length; i += 2) {
+        sigBytes[i / 2] = parseInt(sigHeader.substring(i, i + 2), 16);
+      }
+      const valid = await crypto.subtle.verify("HMAC", key, sigBytes, bodyData);
       if (!valid) {
         return new Response(JSON.stringify({ error: "Invalid signature" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -59,7 +58,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    const event = JSON.parse(body);
+    const event = JSON.parse(rawBody);
 
     if (event.event !== "charge.success") {
       return new Response(JSON.stringify({ received: true }), {
@@ -70,7 +69,7 @@ Deno.serve(async (req) => {
 
     const data = event.data;
     const ref = data.reference as string;
-    const amount = data.amount as number; // already in cents
+    const amount = data.amount as number;
     const email = data.customer?.email as string | undefined;
     const metadata = data.metadata || {};
     const plan = (metadata.plan as string)?.toUpperCase();
@@ -84,7 +83,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Verify plan amount
     const { data: priceRow } = await supabase
       .schema("groundtruth")
       .from("prices")
@@ -99,7 +97,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Record payment
     const { data: payment, error: payErr } = await supabase
       .schema("groundtruth")
       .from("payments")
@@ -120,7 +117,6 @@ Deno.serve(async (req) => {
       throw new Error("Failed to record payment: " + (payErr?.message || "unknown"));
     }
 
-    // Check if license already issued for this payment
     const { data: existing } = await supabase
       .schema("groundtruth")
       .from("licenses")
@@ -135,14 +131,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Generate and sign license
     const serial = generateSerial();
     const expiryDate = getExpiryDate(plan);
-    const expiryDays = Math.floor((expiryDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) + 1;
+    const expiryDays = daysSinceEpoch(expiryDate);
     const payload = codePayloadToBytes(serial, plan, expiryDays, 1, -1);
     const signature = await signBytes(privateKeyPem, payload);
-
-    // Code is human-friendly base32 of payload + signature
     const code = formatCode(serial, plan, signature, payload);
 
     const { error: licErr } = await supabase
@@ -167,18 +160,11 @@ Deno.serve(async (req) => {
       status: 200,
     });
   } catch (err) {
-    console.error("Webhook error:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("Webhook error:", msg);
+    return new Response(JSON.stringify({ error: msg }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
       status: 500,
     });
   }
 });
-
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
-}
