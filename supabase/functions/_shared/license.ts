@@ -28,11 +28,13 @@ function base32Encode(bytes: Uint8Array): string {
 export const PLAN_BYTES: Record<string, number> = {
   "30D": 0x01,
   "1Y": 0x02,
+  "TRIAL": 0x03,
 };
 
 export const PLAN_DAYS: Record<string, number> = {
   "30D": 30,
   "1Y": 365,
+  "TRIAL": 15,
 };
 
 export function codePayloadToBytes(

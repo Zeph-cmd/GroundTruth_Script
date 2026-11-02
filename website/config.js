@@ -12,6 +12,10 @@ const SITE_CONFIG = {
   // Supabase Edge Function URLs
   ACTIVATE_LICENSE_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/activate-license",
   SUBMIT_FEEDBACK_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/submit-feedback",
+  START_TRIAL_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/start-trial",
+
+  // Free trial
+  TRIAL_DAYS: 15,
 
   // GitHub Release download URLs (update when you publish a new release)
   DESKTOP_DOWNLOAD_URL: "https://github.com/Zeph-cmd/GroundTruth_Script/releases/latest/download/GroundTruth.exe",

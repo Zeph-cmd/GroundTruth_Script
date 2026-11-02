@@ -38,7 +38,7 @@ TRIAL_DAYS = 15
 # AI Assistant: questions allowed per subscription period (subscribers only).
 # Botpress free tier = 100 conversations TOTAL (they do not renew), so the
 # quota is per license, not per day: 5 for a 30-day plan, 30 for 1 year.
-AI_PLAN_LIMITS = {"30D": 5, "1Y": 30}
+AI_PLAN_LIMITS = {"TRIAL": 0, "30D": 5, "1Y": 30}
 
 # Days from this epoch are packed into 2 bytes in the code payload.
 # Supports expiry dates up to ~year 2205.
@@ -372,7 +372,7 @@ def _decode_code(code: str) -> tuple[bytes, bytes]:
     if cleaned.startswith("GT-"):
         cleaned = cleaned[3:]
     # Shared codes are formatted as GT-<PLAN>-<base32 chunks>, e.g. GT-30D-6ZVA-...
-    for plan_label in ("30D-", "1Y-"):
+    for plan_label in ("30D-", "1Y-", "TRIAL-"):
         if cleaned.startswith(plan_label):
             cleaned = cleaned[len(plan_label):]
             break
@@ -397,6 +397,8 @@ def _plan_name(plan_byte: int, shared: bool = False) -> str | None:
             return "30D"
         if plan_byte == 0x02:
             return "1Y"
+        if plan_byte == 0x03:
+            return "TRIAL"
     else:
         if plan_byte == 0:
             return "30D"

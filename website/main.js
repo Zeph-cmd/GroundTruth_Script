@@ -25,7 +25,6 @@ function startCheckout(formData) {
     showError("checkout-error", "Invalid plan selected.");
     return;
   }
-
   const email = formData.email.trim();
   const metadata = {
     product: "groundtruth",
@@ -53,9 +52,73 @@ function startCheckout(formData) {
   handler.openIframe();
 }
 
+async function checkTrialUsed(email) {
+  const res = await fetch(SITE_CONFIG.START_TRIAL_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SITE_CONFIG.SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ email, check_only: true }),
+  });
+  if (!res.ok) throw new Error("Server error " + res.status);
+  const data = await res.json();
+  return !!data.has_trial;
+}
+
+async function startFreeTrial(formData) {
+  const btn = document.getElementById("pay-btn");
+  btn.disabled = true;
+  btn.textContent = "Creating your trial...";
+
+  try {
+    const res = await fetch(SITE_CONFIG.START_TRIAL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SITE_CONFIG.SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({
+        email: formData.email.trim(),
+        country: formData.country,
+        purpose: formData.purpose,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ref) {
+      throw new Error(data.error || "Could not start your trial. Please try again.");
+    }
+
+    // Trial ref works like a payment ref: success page polls for the license.
+    window.location.href = `success.html?ref=${encodeURIComponent(data.ref)}&trial=1`;
+  } catch (err) {
+    showError("checkout-error", err.message || "Could not start your trial. Please try again.");
+    btn.disabled = false;
+    btn.textContent = "Start free trial";
+  }
+}
+
 function initCheckoutForm() {
   const form = document.getElementById("checkout-form");
   if (!form) return;
+
+  const payBtn = document.getElementById("pay-btn");
+
+  const updatePayButton = () => {
+    const plan = form.querySelector('input[name="plan"]:checked')?.value;
+    if (plan === "TRIAL") {
+      payBtn.textContent = `Start ${SITE_CONFIG.TRIAL_DAYS}-day free trial`;
+    } else {
+      payBtn.textContent = "Pay & get activation code";
+    }
+  };
+
+  form.querySelectorAll('input[name="plan"]').forEach((input) => {
+    input.addEventListener("change", updatePayButton);
+  });
+  updatePayButton();
 
   form.addEventListener("submit", function (e) {
     e.preventDefault();
@@ -73,6 +136,11 @@ function initCheckoutForm() {
       return;
     }
 
+    if (formData.plan === "TRIAL") {
+      startFreeTrial(formData);
+      return;
+    }
+
     if (SITE_CONFIG.PAYSTACK_PUBLIC_KEY.includes("REPLACE_ME")) {
       showError(
         "checkout-error",
@@ -81,7 +149,32 @@ function initCheckoutForm() {
       return;
     }
 
-    startCheckout(formData);
+    // Paid plans require the free trial to have been started first.
+    payBtn.disabled = true;
+    payBtn.textContent = "Checking trial status...";
+    checkTrialUsed(formData.email)
+      .then((hasTrial) => {
+        if (!hasTrial) {
+          showError(
+            "checkout-error",
+            `You must use the ${SITE_CONFIG.TRIAL_DAYS}-day free trial before subscribing. Choose "Free trial" above first — after it ends you can subscribe here.`
+          );
+          payBtn.disabled = false;
+          payBtn.textContent = "Pay & get activation code";
+          return;
+        }
+        startCheckout(formData);
+        payBtn.disabled = false;
+        payBtn.textContent = "Pay & get activation code";
+      })
+      .catch(() => {
+        showError(
+          "checkout-error",
+          "Could not verify your trial status. Check your connection and try again."
+        );
+        payBtn.disabled = false;
+        payBtn.textContent = "Pay & get activation code";
+      });
   });
 }
 
@@ -197,6 +290,12 @@ async function pollForLicense(ref) {
 function showLicense(data) {
   document.getElementById("loading-state").classList.add("hidden");
   document.getElementById("success-state").classList.remove("hidden");
+
+  if (data.plan === "TRIAL") {
+    document.querySelector("#success-state h1").textContent = "Your free trial is ready!";
+    document.querySelector("#success-state .checkout-sub").innerHTML =
+      `Your ${SITE_CONFIG.TRIAL_DAYS}-day trial code works on <strong>1 Windows PC + unlimited Android devices</strong>. When it ends, come back and subscribe to keep using GroundTruth.`;
+  }
 
   const codeEl = document.getElementById("license-code");
   codeEl.textContent = data.code;
