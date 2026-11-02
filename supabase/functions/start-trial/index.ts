@@ -15,6 +15,7 @@ import {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -58,14 +59,23 @@ Deno.serve(async (req) => {
       const { data: trialPayment } = await supabase
         .schema("groundtruth")
         .from("payments")
-        .select("paystack_ref, plan, status")
+        .select("created_at")
         .ilike("email", emailNorm)
         .eq("plan", "TRIAL")
         .eq("status", "trial")
         .limit(1)
         .maybeSingle();
 
-      return new Response(JSON.stringify({ has_trial: !!trialPayment }), {
+      const trialStartedAt = trialPayment ? Date.parse(trialPayment.created_at) : 0;
+      const trialEndDate = trialStartedAt ? getExpiryDate("TRIAL", new Date(trialStartedAt)) : null;
+      const trialEndsAt = trialEndDate?.getTime() ?? null;
+      const canSubscribe = trialEndsAt !== null && Date.now() >= trialEndsAt;
+
+      return new Response(JSON.stringify({
+        has_trial: !!trialPayment,
+        can_subscribe: canSubscribe,
+        trial_ends_at: trialEndsAt ? new Date(trialEndsAt).toISOString() : null,
+      }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 200,
       });
@@ -135,7 +145,7 @@ Deno.serve(async (req) => {
     }
 
     const serial = generateSerial();
-    const expiryDate = getExpiryDate("TRIAL");
+    const expiryDate = getExpiryDate("TRIAL", new Date(payment.created_at));
     const expiryDays = daysSinceEpoch(expiryDate);
     const payload = codePayloadToBytes(serial, "TRIAL", expiryDays, 1, -1);
     const signature = await signBytes(privateKeyPem, payload);

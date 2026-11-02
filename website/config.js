@@ -13,6 +13,7 @@ const SITE_CONFIG = {
   ACTIVATE_LICENSE_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/activate-license",
   SUBMIT_FEEDBACK_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/submit-feedback",
   START_TRIAL_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/start-trial",
+  INITIALIZE_PAYMENT_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/initialize-payment",
 
   // Free trial
   TRIAL_DAYS: 15,

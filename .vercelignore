@@ -1,0 +1,5 @@
+# Static site deploy: only the website/ folder and root vercel.json are needed.
+*
+!vercel.json
+!website
+!website/**

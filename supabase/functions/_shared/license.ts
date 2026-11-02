@@ -68,16 +68,24 @@ export async function signBytes(privateKeyPem: string, payload: Uint8Array): Pro
     .replace(/-----END PRIVATE KEY-----/g, "")
     .replace(/\s/g, "");
   const keyBytes = decodeBase64(base64);
+  const keyData = keyBytes.buffer.slice(
+    keyBytes.byteOffset,
+    keyBytes.byteOffset + keyBytes.byteLength,
+  ) as ArrayBuffer;
 
   const cryptoKey = await crypto.subtle.importKey(
     "pkcs8",
-    keyBytes,
+    keyData,
     { name: "Ed25519" },
     false,
     ["sign"],
   );
 
-  const signature = await crypto.subtle.sign("Ed25519", cryptoKey, payload);
+  const signature = await crypto.subtle.sign(
+    "Ed25519",
+    cryptoKey,
+    payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer,
+  );
   return encodeBase64(new Uint8Array(signature));
 }
 
@@ -88,17 +96,29 @@ export async function verifySignature(publicKeyPem: string, payload: Uint8Array,
       .replace(/-----END PUBLIC KEY-----/g, "")
       .replace(/\s/g, "");
     const keyBytes = decodeBase64(base64);
+    const keyData = keyBytes.buffer.slice(
+      keyBytes.byteOffset,
+      keyBytes.byteOffset + keyBytes.byteLength,
+    ) as ArrayBuffer;
     const signature = decodeBase64(signatureB64);
+    const signatureData = signature.buffer.slice(
+      signature.byteOffset,
+      signature.byteOffset + signature.byteLength,
+    ) as ArrayBuffer;
+    const payloadData = payload.buffer.slice(
+      payload.byteOffset,
+      payload.byteOffset + payload.byteLength,
+    ) as ArrayBuffer;
 
     const cryptoKey = await crypto.subtle.importKey(
       "spki",
-      keyBytes,
+      keyData,
       { name: "Ed25519" },
       false,
       ["verify"],
     );
 
-    return await crypto.subtle.verify("Ed25519", cryptoKey, signature, payload);
+    return await crypto.subtle.verify("Ed25519", cryptoKey, signatureData, payloadData);
   } catch {
     return false;
   }
@@ -120,11 +140,13 @@ export function formatCode(serialHex: string, plan: string, signatureB64: string
   return `GT-${plan}-${chunks.join("-")}`;
 }
 
-export function getExpiryDate(plan: string): Date {
+export function getExpiryDate(plan: string, startDate = new Date()): Date {
   const days = PLAN_DAYS[plan];
   if (!days) throw new Error("Invalid plan");
-  const d = new Date();
-  d.setDate(d.getDate() + days);
+  const d = new Date(startDate);
+  // Payload stores a UTC-day boundary. Add an extra calendar day so a trial
+  // started mid-day receives at least 15 complete days before that boundary.
+  d.setDate(d.getDate() + (plan === "TRIAL" ? days + 1 : days));
   d.setHours(0, 0, 0, 0);
   return d;
 }

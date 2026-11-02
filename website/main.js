@@ -19,37 +19,35 @@ function getPlanAmount(plan) {
   return SITE_CONFIG.PRICES[plan];
 }
 
-function startCheckout(formData) {
-  const amountCents = getPlanAmount(formData.plan);
-  if (!amountCents) {
-    showError("checkout-error", "Invalid plan selected.");
-    return;
+async function startCheckout(formData) {
+  const btn = document.getElementById("pay-btn");
+  btn.disabled = true;
+  btn.textContent = "Opening secure checkout...";
+
+  try {
+    const res = await fetch(SITE_CONFIG.INITIALIZE_PAYMENT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: SITE_CONFIG.SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({
+        email: formData.email.trim(),
+        plan: formData.plan,
+        country: formData.country,
+        purpose: formData.purpose,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.authorization_url) {
+      throw new Error(data.error || "Could not start payment. Please try again.");
+    }
+    window.location.href = data.authorization_url;
+  } catch (err) {
+    showError("checkout-error", err.message || "Could not start payment. Please try again.");
+    btn.disabled = false;
+    btn.textContent = "Pay & get activation code";
   }
-  const email = formData.email.trim();
-  const metadata = {
-    product: "groundtruth",
-    country: formData.country,
-    purpose: formData.purpose,
-    plan: formData.plan,
-  };
-
-  const handler = PaystackPop.setup({
-    key: SITE_CONFIG.PAYSTACK_PUBLIC_KEY,
-    email,
-    amount: amountCents,
-    currency: "USD",
-    ref: "GT-" + Date.now() + "-" + Math.floor(Math.random() * 10000),
-    metadata,
-    callback: function (response) {
-      // Redirect to success page with Paystack reference
-      window.location.href = `success.html?ref=${encodeURIComponent(response.reference)}`;
-    },
-    onClose: function () {
-      // User closed checkout. Do nothing.
-    },
-  });
-
-  handler.openIframe();
 }
 
 async function checkTrialUsed(email) {
@@ -62,8 +60,7 @@ async function checkTrialUsed(email) {
     body: JSON.stringify({ email, check_only: true }),
   });
   if (!res.ok) throw new Error("Server error " + res.status);
-  const data = await res.json();
-  return !!data.has_trial;
+  return await res.json();
 }
 
 async function startFreeTrial(formData) {
@@ -149,23 +146,21 @@ function initCheckoutForm() {
       return;
     }
 
-    // Paid plans require the free trial to have been started first.
+    // Only the server can authorize paid checkout after the full trial.
     payBtn.disabled = true;
     payBtn.textContent = "Checking trial status...";
     checkTrialUsed(formData.email)
-      .then((hasTrial) => {
-        if (!hasTrial) {
-          showError(
-            "checkout-error",
-            `You must use the ${SITE_CONFIG.TRIAL_DAYS}-day free trial before subscribing. Choose "Free trial" above first — after it ends you can subscribe here.`
-          );
+      .then((trialStatus) => {
+        if (!trialStatus.can_subscribe) {
+          const message = trialStatus.has_trial
+            ? `Your 15-day free trial is still active. You can subscribe after ${new Date(trialStatus.trial_ends_at).toLocaleString()}.`
+            : `Start your ${SITE_CONFIG.TRIAL_DAYS}-day free trial first. You can subscribe after you have completed it.`;
+          showError("checkout-error", message);
           payBtn.disabled = false;
           payBtn.textContent = "Pay & get activation code";
           return;
         }
         startCheckout(formData);
-        payBtn.disabled = false;
-        payBtn.textContent = "Pay & get activation code";
       })
       .catch(() => {
         showError(
@@ -232,7 +227,7 @@ function initSuccessPage() {
   if (!licenseCodeEl) return;
 
   const params = new URLSearchParams(window.location.search);
-  const ref = params.get("ref");
+  const ref = params.get("ref") || params.get("reference");
 
   if (!ref) {
     document.getElementById("loading-state").classList.add("hidden");

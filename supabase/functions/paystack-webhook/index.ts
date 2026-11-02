@@ -33,8 +33,14 @@ Deno.serve(async (req) => {
 
     // Verify Paystack HMAC-SHA512 signature
     const sigHeader = req.headers.get("x-paystack-signature");
+    if (!sigHeader || sigHeader.length !== 128 || !/^[0-9a-f]+$/i.test(sigHeader)) {
+      return new Response(JSON.stringify({ error: "Missing or invalid signature" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 401,
+      });
+    }
     const rawBody = await req.text();
-    if (sigHeader) {
+    {
       const encoder = new TextEncoder();
       const keyData = encoder.encode(paystackSecret);
       const bodyData = encoder.encode(rawBody);
@@ -104,6 +110,39 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Amount mismatch" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
         status: 400,
+      });
+    }
+
+    // Defense in depth: never issue a paid license until the full trial has elapsed.
+    const normalizedEmail = (email || "").trim().toLowerCase();
+    const { data: trial } = await supabase
+      .schema("groundtruth")
+      .from("payments")
+      .select("created_at")
+      .ilike("email", normalizedEmail)
+      .eq("plan", "TRIAL")
+      .eq("status", "trial")
+      .limit(1)
+      .maybeSingle();
+    const trialEndsAt = trial ? getExpiryDate("TRIAL", new Date(trial.created_at)).getTime() : 0;
+    if (!trial || Date.now() < trialEndsAt) {
+      const { error: rejectedErr } = await supabase
+        .schema("groundtruth")
+        .from("payments")
+        .upsert({
+          paystack_ref: ref,
+          email: normalizedEmail || null,
+          amount_cents: amount,
+          plan,
+          country,
+          purpose,
+          status: "trial_required",
+          paystack_data: data,
+        }, { onConflict: "paystack_ref" });
+      if (rejectedErr) throw new Error("Failed to record blocked payment: " + rejectedErr.message);
+      return new Response(JSON.stringify({ received: true, license_issued: false, reason: "trial_required" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200,
       });
     }
 
