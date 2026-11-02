@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
       .schema("groundtruth")
       .from("payments")
       .select("created_at")
-      .ilike("email", emailNorm)
+      .eq("email", emailNorm)
       .eq("plan", "TRIAL")
       .eq("status", "trial")
       .limit(1)
