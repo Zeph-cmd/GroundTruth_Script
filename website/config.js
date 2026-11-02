@@ -2,12 +2,12 @@
 // Replace these placeholders with your real keys before deploying.
 
 const SITE_CONFIG = {
-  // Paystack public key (test or live)
-  PAYSTACK_PUBLIC_KEY: "pk_test_REPLACE_ME",
+  // Paystack public key (live)
+  PAYSTACK_PUBLIC_KEY: "pk_live_f746fe0e2e9cc44867cae0dc59bd2ef6ee3bdb25",
 
   // Supabase project URL and anon key
   SUPABASE_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co",
-  SUPABASE_ANON_KEY: "REPLACE_ME",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtemltZHliZndiZHdramx2ZWt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUwNjIwNDIsImV4cCI6MjA5MDYzODA0Mn0.PIDqi0nfXwZcSXp166hg3IO1Zle1JV__nAsbta_CTvU",
 
   // Supabase Edge Function URLs
   ACTIVATE_LICENSE_URL: "https://tmzimdybfwbdwkjlvekx.supabase.co/functions/v1/activate-license",

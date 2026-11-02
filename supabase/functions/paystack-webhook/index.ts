@@ -23,7 +23,7 @@ Deno.serve(async (req) => {
   try {
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+      Deno.env.get("SERVICE_ROLE_KEY") ?? ""
     );
 
     const paystackSecret = Deno.env.get("PAYSTACK_SECRET_KEY");
@@ -32,12 +32,34 @@ Deno.serve(async (req) => {
       throw new Error("Missing environment secrets");
     }
 
-    // Optional: verify Paystack signature header
-    // const signature = req.headers.get("x-paystack-signature");
-    // const body = await req.text();
-    // TODO: implement HMAC-SHA512 verification if header present
+    // Verify Paystack signature header
+    const signature = req.headers.get("x-paystack-signature");
+    const body = await req.text();
+    if (signature) {
+      const encoder = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(paystackSecret),
+        { name: "HMAC", hash: "SHA-512" },
+        false,
+        ["sign", "verify"]
+      );
+      const sigBytes = hexToBytes(signature);
+      const valid = await crypto.subtle.verify(
+        "HMAC",
+        key,
+        sigBytes,
+        encoder.encode(body)
+      );
+      if (!valid) {
+        return new Response(JSON.stringify({ error: "Invalid signature" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+          status: 401,
+        });
+      }
+    }
 
-    const event = await req.json();
+    const event = JSON.parse(body);
 
     if (event.event !== "charge.success") {
       return new Response(JSON.stringify({ received: true }), {
@@ -152,3 +174,11 @@ Deno.serve(async (req) => {
     });
   }
 });
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}

@@ -19,7 +19,7 @@ Deno.serve(async (req) => {
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    Deno.env.get("SERVICE_ROLE_KEY") ?? ""
   );
 
   try {
@@ -134,7 +134,7 @@ Deno.serve(async (req) => {
         (a) => a.device_fingerprint === device_fingerprint
       );
 
-      if (!alreadyActivated &amp;&amp; (existingActivations?.length || 0) >= allowedSeats) {
+      if (!alreadyActivated && (existingActivations?.length || 0) >= allowedSeats) {
         return new Response(JSON.stringify({ status: "seat_taken" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
           status: 200,
