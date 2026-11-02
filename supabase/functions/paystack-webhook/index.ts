@@ -76,6 +76,16 @@ Deno.serve(async (req) => {
     const country = (metadata.country as string) || "";
     const purpose = (metadata.purpose as string) || "";
 
+    // Multiple apps share this Paystack account. Only process GroundTruth
+    // payments (marked via metadata.product); silently ack everything else
+    // so sibling webhooks (e.g. SmartJotter) never cause retries/failures.
+    if (metadata.product !== "groundtruth") {
+      return new Response(JSON.stringify({ received: true, ignored: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 200,
+      });
+    }
+
     if (!ref || !plan) {
       return new Response(JSON.stringify({ error: "Missing reference or plan" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },

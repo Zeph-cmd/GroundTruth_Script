@@ -28,6 +28,7 @@ function startCheckout(formData) {
 
   const email = formData.email.trim();
   const metadata = {
+    product: "groundtruth",
     country: formData.country,
     purpose: formData.purpose,
     plan: formData.plan,
