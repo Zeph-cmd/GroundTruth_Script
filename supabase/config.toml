@@ -17,3 +17,6 @@ verify_jwt = false
 
 [functions.submit-feedback]
 verify_jwt = false
+
+[functions.trip-relay]
+verify_jwt = false

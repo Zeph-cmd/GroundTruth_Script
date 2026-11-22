@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import shutil
-from datetime import datetime
+import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -79,10 +81,12 @@ import utils.ai_assistant as ai_assistant
 from utils.metadata_loader import load_trip_metadata
 from utils.godseye import build_dashboard_url
 from utils.map_loader import build_trip_map, extract_gps_points
+from utils.photo_forensics import ForensicReport, VERDICT_LABELS, analyze_photo, render_ela_image, scan_trip
 from utils.image_enhancer import get_enhanced_image_path
 from utils.image_loader import get_trip_images
 from utils.trip_loader import get_trip_folders
 from utils.rvtrip import import_rvtrip, RvTripImportResult
+import utils.relay_client as relay_client
 from utils.trip_importer import TripImportError, import_trip_zip
 from utils.yolo_detector import YOLODetectorError, detect_objects
 from utils.audit_logger import log_audit_event, get_audit_logs, clear_audit_logs, verify_audit_password
@@ -223,6 +227,219 @@ def _build_image_records(trip_path: Path, metadata: dict | None) -> list[dict]:
             }
         )
     return records
+
+
+def _build_video_map(trip_path: Path, metadata: dict | None) -> dict[str, dict[str, Path]]:
+    """Map each frame's file name to its video(s).
+
+    Returns {"image0001.jpg": {"video": Path, "video_full": Path}} with only
+    existing files included. Falls back to matching "imageNNNN" against
+    "videoNNNN" when metadata has no explicit video field.
+    """
+    video_map: dict[str, dict[str, Path]] = {}
+
+    def _existing_video(name: object | None) -> Path | None:
+        if not isinstance(name, str) or not name.strip():
+            return None
+        candidate = trip_path / "videos" / Path(name).name
+        return candidate if candidate.is_file() else None
+
+    def _existing_full_video(name: object | None) -> Path | None:
+        if not isinstance(name, str) or not name.strip():
+            return None
+        candidate = trip_path / "videos_full" / Path(name).name
+        return candidate if candidate.is_file() else None
+
+    entries: list = []
+    if isinstance(metadata, dict):
+        for key in ("photos", "images", "frames", "items", "records"):
+            value = metadata.get(key)
+            if isinstance(value, list):
+                entries = [entry for entry in value if isinstance(entry, dict)]
+                break
+
+    for entry in entries:
+        frame_name = entry.get("file") or entry.get("filename") or entry.get("name")
+        if not isinstance(frame_name, str) or not frame_name:
+            continue
+        videos: dict[str, Path] = {}
+        clip = _existing_video(entry.get("video"))
+        if clip:
+            videos["video"] = clip
+        full = _existing_full_video(entry.get("video_full") or entry.get("full_video"))
+        if full:
+            videos["video_full"] = full
+        if videos:
+            video_map[frame_name.lower()] = videos
+
+    # Fallback for packages without per-frame video metadata: pair imageNNNN
+    # with videoNNNN by number when the metadata mapping is absent.
+    if not video_map:
+        frames = {p.name.lower(): p for p in (trip_path / "frames").glob("*.jpg")} if (trip_path / "frames").is_dir() else {}
+        clips = {p.stem.lower(): p for p in (trip_path / "videos").glob("*.mp4")} if (trip_path / "videos").is_dir() else {}
+        for frame_name, frame_path in frames.items():
+            digits = "".join(ch for ch in Path(frame_name).stem if ch.isdigit())
+            if digits and f"video{digits}" in clips:
+                video_map[frame_name] = {"video": clips[f"video{digits}"]}
+    return video_map
+
+
+def _collect_trip_videos(trip_path: Path) -> dict[str, list[Path]]:
+    """All videos in the trip, grouped: frame clips (videos/) and full
+    30-second recordings (videos_full/), sorted by name."""
+    grouped: dict[str, list[Path]] = {"frame": [], "full": []}
+    videos_dir = trip_path / "videos"
+    if videos_dir.is_dir():
+        grouped["frame"] = sorted(p for p in videos_dir.glob("*.mp4") if p.is_file())
+    full_dir = trip_path / "videos_full"
+    if full_dir.is_dir():
+        grouped["full"] = sorted(p for p in full_dir.glob("*.mp4") if p.is_file())
+    return grouped
+
+
+def _render_video_player(video_path: Path, label: str) -> None:
+    """Render a video player for the given file (loaded as bytes)."""
+    try:
+        video_bytes = video_path.read_bytes()
+    except OSError as exc:
+        st.error(f"Could not read video: {exc}")
+        return
+    st.caption(f"{label} — {video_path.name} ({len(video_bytes) / (1024 * 1024):.1f} MB)")
+    st.video(video_bytes)
+
+
+def _find_vlc() -> str | None:
+    """Locate the machine's VLC player, if installed."""
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")) / "VideoLAN" / "VLC" / "vlc.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")) / "VideoLAN" / "VLC" / "vlc.exe",
+    ]
+    local_app = os.environ.get("LOCALAPPDATA")
+    if local_app:
+        candidates.append(Path(local_app) / "Programs" / "VideoLAN" / "VLC" / "vlc.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("vlc")
+
+
+def _open_in_vlc(video_paths: list[Path], label: str = "video") -> None:
+    """Open video file(s) in the machine's VLC player. Multiple files play
+    consecutively as a playlist. Falls back to the system default player."""
+    if not video_paths:
+        st.warning("No videos to play.")
+        return
+    vlc_exe = _find_vlc()
+    try:
+        if vlc_exe:
+            subprocess.Popen([vlc_exe, *[str(p) for p in video_paths]])
+            if len(video_paths) == 1:
+                st.success(f"Opening {video_paths[0].name} in VLC…")
+            else:
+                st.success(f"Opening {len(video_paths)} videos in VLC — they will play one after another.")
+        else:
+            for video_path in video_paths:
+                os.startfile(str(video_path))
+            st.info("VLC not found — opened with the system's default video player instead.")
+    except OSError as exc:
+        st.error(f"Could not open {label}: {exc}")
+
+
+_VERDICT_COLORS = {
+    "clean": "green",
+    "suspicious": "orange",
+    "edited": "red",
+    "no_metadata": "gray",
+}
+
+_FINDING_ICONS = {"edited": "🔴", "suspicious": "🟠", "notice": "🔵"}
+
+
+def _render_forensic_report(report: ForensicReport) -> None:
+    meta_cols = st.columns(3)
+    meta_cols[0].metric("Capture time", report.capture_time or "—")
+    meta_cols[1].metric("Camera", report.camera or "—")
+    meta_cols[2].metric("GPS", report.gps or "—")
+    if not report.findings:
+        st.markdown("No tamper indicators found.")
+    for finding in report.findings:
+        icon = _FINDING_ICONS.get(finding.level, "⚪")
+        st.markdown(f"{icon} **{finding.title}** — {finding.detail}")
+    if report.ela_score is not None:
+        st.caption(f"Recompression error level: {report.ela_score:.2f} (informational)")
+
+
+def _render_photo_forensics(trip_path: Path, image_records: list[dict]) -> None:
+    """Photo Forensics section: tamper-evidence checks for dropped-in photos
+    and for the currently selected trip."""
+    st.divider()
+    st.subheader("Photo Forensics")
+    st.caption(
+        "Tamper-evidence checks: editing-software fingerprints, EXIF thumbnail "
+        "mismatch, timestamp contradictions, stripped camera data, recompression "
+        "and GPS sanity. Findings are strong forensic hints, not mathematical proof."
+    )
+    tab_single, tab_trip = st.tabs(["Check individual photos", "Scan current trip"])
+
+    with tab_single:
+        st.caption("Drop photo(s) here — works on any photo from any device (phone, camera, WhatsApp, …).")
+        uploads = st.file_uploader(
+            "Photos to inspect",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+            key="forensics_uploader",
+            label_visibility="collapsed",
+        )
+        if uploads:
+            for upload in uploads:
+                report = analyze_photo(upload.getvalue(), filename=upload.name)
+                color = _VERDICT_COLORS.get(report.verdict, "gray")
+                with st.expander(
+                    f":{color}[{VERDICT_LABELS[report.verdict]}] — {upload.name}",
+                    expanded=report.verdict in {"edited", "suspicious"},
+                ):
+                    _render_forensic_report(report)
+                    ela = render_ela_image(upload.getvalue())
+                    if ela is not None:
+                        st.caption("Error-level analysis (bright zones = recompressed/edited areas):")
+                        st.image(ela, use_container_width=True)
+
+    with tab_trip:
+        photo_count = len(image_records)
+        st.caption(
+            f"Runs every tamper check on the {photo_count} photo(s) of "
+            f"**{trip_path.name}**."
+        )
+        if st.button("Scan trip photos", key="forensics_scan_trip", disabled=photo_count == 0):
+            with st.spinner("Scanning photos…"):
+                st.session_state.forensics_trip_reports = scan_trip(
+                    trip_path, [record["path"] for record in image_records]
+                )
+            log_audit_event(
+                "photo_forensics_scan",
+                f"Ran photo forensics scan on trip {trip_path.name} ({photo_count} photos)",
+            )
+        reports = st.session_state.get("forensics_trip_reports")
+        if reports:
+            edited = sum(1 for r in reports if r.verdict == "edited")
+            suspicious = sum(1 for r in reports if r.verdict == "suspicious")
+            no_meta = sum(1 for r in reports if r.verdict == "no_metadata")
+            clean = len(reports) - edited - suspicious - no_meta
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Edited", edited)
+            summary_cols[1].metric("Suspicious", suspicious)
+            summary_cols[2].metric("Clean", clean)
+            summary_cols[3].metric("No metadata", no_meta)
+            for report in reports:
+                color = _VERDICT_COLORS.get(report.verdict, "gray")
+                if report.verdict in {"edited", "suspicious"}:
+                    with st.expander(
+                        f":{color}[{VERDICT_LABELS[report.verdict]}] — {report.file}",
+                        expanded=True,
+                    ):
+                        _render_forensic_report(report)
+                else:
+                    st.markdown(f":{color}[{VERDICT_LABELS[report.verdict]}] — {report.file}")
 
 
 def _is_image_file(path: Path) -> bool:
@@ -666,6 +883,213 @@ def _render_trial_expiry_indicator():
     )
 
 
+class _RelayTripFile:
+    """Minimal file-like wrapper so a downloaded cloud trip reuses import_rvtrip."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.name = path.name
+
+    def read(self) -> bytes:
+        return self.path.read_bytes()
+
+
+def _render_cloud_inbox():
+    """Cloud Trips inbox (paid subscribers only).
+
+    Entirely hidden unless the server reports cloud sharing enabled AND this
+    machine holds an active paid license. The server independently rejects
+    trial, expired or revoked devices even if a client is modified.
+    """
+    try:
+        status = licensing.get_status()
+    except Exception:
+        return
+    if status.get("mode") != "licensed":
+        return
+
+    now = time.time()
+    cache = st.session_state.get("relay_status_cache")
+    if cache and now - cache.get("checked_at", 0) < 60:
+        enabled = cache.get("enabled")
+    else:
+        enabled = relay_client.relay_enabled()
+        st.session_state.relay_status_cache = {"checked_at": now, "enabled": enabled}
+    if not enabled:
+        return
+
+    st.subheader("Cloud Trips (Inbox)")
+    record = relay_client.get_credential()
+    if not record:
+        st.caption(
+            "Connect once with your activation code to receive trips from "
+            "your GroundTruth Vision phones."
+        )
+        code_input = st.text_input("Activation code", type="password", key="relay_connect_code")
+        if st.button("Connect Cloud Sharing", disabled=not code_input.strip()):
+            try:
+                relay_client.enroll(code_input.strip(), str(status.get("device_id", "")))
+                st.success("Connected. This PC can now receive cloud trips.")
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+        return
+
+    if st.button("Refresh Inbox"):
+        st.session_state.pop("relay_inbox_cache", None)
+
+    inbox = st.session_state.get("relay_inbox_cache")
+    if inbox is None:
+        try:
+            inbox = relay_client.list_inbox()
+            st.session_state.relay_inbox_cache = inbox or []
+        except relay_client.RelayError as exc:
+            st.warning(str(exc))
+            return
+        inbox = st.session_state.relay_inbox_cache
+
+    if not inbox:
+        st.caption(
+            "No cloud trips right now. Trips uploaded from GroundTruth Vision "
+            "appear here for 6 hours, or until you download them."
+        )
+        return
+
+    for trip in inbox:
+        trip_id = str(trip.get("trip_id", ""))
+        size_mb = (trip.get("size_bytes") or 0) / (1024 * 1024)
+        try:
+            expires = datetime.fromisoformat(
+                str(trip.get("expires_at")).replace(" ", "T").replace("Z", "+00:00")
+            )
+            minutes_left = max(int((expires - datetime.now(timezone.utc)).total_seconds() // 60), 0)
+            countdown = (
+                f"{minutes_left // 60}h {minutes_left % 60:02d}m left"
+                if minutes_left >= 60
+                else f"{minutes_left}m left"
+            )
+        except Exception:
+            countdown = "expiring soon"
+        if st.button(f"Download & Import ({size_mb:.1f} MB, {countdown})", key=f"relay_dl_{trip_id}"):
+            try:
+                path = relay_client.download_trip(trip, Path("trips") / "_relay")
+                result = import_rvtrip(_RelayTripFile(path), clear_old=True)
+                _log_upload(path.name, "relay", [])
+                st.session_state.verification_result = result.verification
+                st.session_state.imported_trip_dir = str(result.trip_dir)
+                st.session_state.pop("relay_inbox_cache", None)
+                st.success(f"Imported {result.trip_dir.name} from cloud")
+                st.rerun()
+            except relay_client.RelayError as exc:
+                st.error(str(exc))
+            except Exception as exc:
+                st.error(f"Cloud import failed: {exc}")
+
+
+def _render_downloaded_trips():
+    """Local copies of previously downloaded cloud trips (kept permanently).
+
+    Purely local: lists trips/_relay inside an expandable dropdown and offers
+    one-click re-import. Deleting a saved copy requires the same password as
+    the audit log (with the same lockout protection). Shown regardless of the
+    relay feature state so users can always revisit their saved trips, and
+    hidden automatically when there is nothing to show.
+    """
+    from utils.audit_logger import (
+        verify_audit_password,
+        is_locked,
+        lockout_remaining_seconds,
+        _load_config,
+        MAX_FAILED_ATTEMPTS,
+    )
+
+    relay_dir = Path("trips") / "_relay"
+    if not relay_dir.is_dir():
+        return
+    files = []
+    for path in relay_dir.glob("*.rvtrip"):
+        try:
+            files.append((path, path.stat()))
+        except OSError:
+            continue
+    if not files:
+        return
+    files.sort(key=lambda item: item[1].st_mtime, reverse=True)
+
+    with st.expander(f"Downloaded Trips ({len(files)})", expanded=len(files) <= 3):
+        st.caption(
+            "Saved copies of cloud trips you downloaded. Re-import anytime, or "
+            "find them in Downloads\\GroundTruth."
+        )
+        for path, stat in files:
+            size_mb = stat.st_size / (1024 * 1024)
+            mtime = datetime.fromtimestamp(stat.st_mtime)
+            trip_label = relay_client.read_trip_label(path)
+            label_text = trip_label or path.name
+            row_label = f"{label_text} — {path.name} ({size_mb:.1f} MB, {mtime:%d %b %Y})"
+            row = st.container(horizontal=True)
+            reimport_btn = row.button("Re-import", key=f"relay_reimport_{path.name}")
+            delete_btn = row.button("Delete", key=f"relay_delete_{path.name}")
+
+            if reimport_btn:
+                try:
+                    result = import_rvtrip(_RelayTripFile(path), clear_old=True)
+                    _log_upload(path.name, "relay", [])
+                    st.session_state.verification_result = result.verification
+                    st.session_state.imported_trip_dir = str(result.trip_dir)
+                    st.success(f"Imported {result.trip_dir.name}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Import failed: {exc}")
+
+            if delete_btn:
+                st.session_state[f"relay_confirm_delete_{path.name}"] = True
+
+            if st.session_state.get(f"relay_confirm_delete_{path.name}"):
+                if is_locked():
+                    st.warning(
+                        "Deletion locked: too many failed password attempts. "
+                        f"Try again in {lockout_remaining_seconds() // 60} minutes."
+                    )
+                else:
+                    st.warning(f"Delete {row_label}? This cannot be undone.")
+                    delete_pass = st.text_input(
+                        "Audit log password to confirm deletion",
+                        type="password",
+                        key=f"relay_delete_pass_{path.name}",
+                    )
+                    col_confirm, col_cancel = st.columns(2)
+                    if col_confirm.button("Confirm delete", key=f"relay_delete_ok_{path.name}"):
+                        if verify_audit_password(delete_pass):
+                            try:
+                                path.unlink()
+                            except OSError as exc:
+                                st.error(f"Could not delete the file: {exc}")
+                            else:
+                                try:
+                                    (relay_client.downloads_dir() / path.name).unlink()
+                                except OSError:
+                                    pass  # the Downloads copy may already be gone
+                                log_audit_event(
+                                    "downloaded_trip_deleted",
+                                    f"Deleted downloaded cloud trip copy: {path.name}",
+                                )
+                                st.session_state.pop(f"relay_confirm_delete_{path.name}", None)
+                                st.success(f"Deleted {path.name}")
+                                st.rerun()
+                        else:
+                            attempts_left = max(
+                                MAX_FAILED_ATTEMPTS - _load_config()["failed_attempts"], 0
+                            )
+                            st.error(
+                                f"Incorrect password. {attempts_left} attempts "
+                                "remaining before lockout."
+                            )
+                    if col_cancel.button("Cancel", key=f"relay_delete_no_{path.name}"):
+                        st.session_state.pop(f"relay_confirm_delete_{path.name}", None)
+                        st.rerun()
+
+
 st.set_page_config(page_title="GroundTruth Dataset Explorer", layout="wide")
 st.title("GroundTruth Dataset Explorer")
 
@@ -706,6 +1130,17 @@ with st.sidebar:
         except Exception as exc:
             st.error(str(exc))
 
+    try:
+        _render_cloud_inbox()
+    except Exception:
+        logging.getLogger(__name__).exception("Cloud inbox failed silently")
+        st.caption("Cloud Trips is temporarily unavailable.")
+
+    try:
+        _render_downloaded_trips()
+    except Exception:
+        logging.getLogger(__name__).exception("Downloaded trips list failed silently")
+
     trips = get_trip_folders()
 
     st.subheader("External View")
@@ -717,6 +1152,12 @@ with st.sidebar:
     st.link_button(
         "Live Cybermap",
         "https://cybermap.kaspersky.com",
+        use_container_width=True,
+    )
+    st.link_button(
+        "Open Argos Atlas (External)",
+        "https://argosatlas.com/map/",
+        help="Opens the third-party Argos Atlas map in your browser. Any account or plan upgrades are handled on their site.",
         use_container_width=True,
     )
 
@@ -963,6 +1404,7 @@ else:
             gps_available = gps_available.strip().lower() in {"yes", "true", "1", "available"}
 
         image_records = _build_image_records(selected_trip_path, metadata_result.get("metadata"))
+        video_map = _build_video_map(selected_trip_path, metadata_result.get("metadata"))
         image_path_lookup = {record["name"].lower(): record["path"] for record in image_records}
         if any(not _is_image_file(record["path"]) for record in image_records):
             st.warning("Some trip files are metadata JSON files. The gallery previews image files only.")
@@ -990,6 +1432,8 @@ else:
             "GPS Available",
             "Yes" if gps_available else "No",
         )
+
+        _render_photo_forensics(selected_trip_path, image_records)
 
         st.divider()
         st.subheader("Trip Imagery Map")
@@ -1405,5 +1849,49 @@ else:
                             except (ValueError, TypeError):
                                 pass
 
+                        frame_videos = video_map.get(detail_record["name"].lower(), {})
+                        if "video" in frame_videos:
+                            if st.button("Play frame video", key="detail_play_frame"):
+                                st.session_state.detail_show_frame_video = not st.session_state.get("detail_show_frame_video", False)
+                            if st.session_state.get("detail_show_frame_video"):
+                                _render_video_player(frame_videos["video"], "Frame video")
+                        if "video_full" in frame_videos:
+                            if st.button("Play 30s video", key="detail_play_full"):
+                                st.session_state.detail_show_full_video = not st.session_state.get("detail_show_full_video", False)
+                            if st.session_state.get("detail_show_full_video"):
+                                _render_video_player(frame_videos["video_full"], "30-second recording")
+
                         if ai_detection_enabled:
                             _render_ai_detection_results(detail_record["path"])
+
+        videos_grouped = _collect_trip_videos(selected_trip_path)
+        videos_total = len(videos_grouped["frame"]) + len(videos_grouped["full"])
+        if videos_total:
+            st.divider()
+            with st.expander(f"Videos ({videos_total})", expanded=False):
+                if videos_grouped["frame"]:
+                    st.markdown(f"**Frame clips:** {len(videos_grouped['frame'])}")
+                    if st.button("▶ Watch all frames (VLC)", key="watch_all_frames"):
+                        _open_in_vlc(videos_grouped["frame"], "frame clips")
+                        st.caption("Every frame clip is queued in VLC and plays one after another.")
+                    for video_path in videos_grouped["frame"]:
+                        matched_frame = next(
+                            (frame for frame, vids in video_map.items() if vids.get("video") == video_path),
+                            None,
+                        )
+                        label = f"Open in VLC — {video_path.name}" + (f" (from {matched_frame})" if matched_frame else "")
+                        if st.button(label, key=f"play_frame_{video_path.name}"):
+                            _open_in_vlc([video_path], "frame clip")
+                if videos_grouped["full"]:
+                    st.markdown(f"**30-second recordings:** {len(videos_grouped['full'])}")
+                    if st.button("▶ Watch all 30s recordings (VLC)", key="watch_all_full"):
+                        _open_in_vlc(videos_grouped["full"], "30-second recordings")
+                        st.caption("Every 30-second recording is queued in VLC and plays one after another.")
+                    for video_path in videos_grouped["full"]:
+                        matched_frame = next(
+                            (frame for frame, vids in video_map.items() if vids.get("video_full") == video_path),
+                            None,
+                        )
+                        label = f"Open in VLC — {video_path.name}" + (f" (from {matched_frame})" if matched_frame else "")
+                        if st.button(label, key=f"play_full_{video_path.name}"):
+                            _open_in_vlc([video_path], "30-second recording")

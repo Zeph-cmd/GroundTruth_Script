@@ -62,6 +62,8 @@ audit_log.json
 exports/
 trips/_incoming/
 trips/.extracted_rv/
+trips/_relay/
+supabase/.temp/
 
 # Keep source trip data structure but ignore generated content
 # (remove the next line if you DO want trip images/metadata committed)

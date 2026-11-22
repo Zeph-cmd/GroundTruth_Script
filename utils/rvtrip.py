@@ -102,6 +102,14 @@ def verify_rvtrip(rvtrip_path: Path) -> dict[str, Any]:
                     for item in video_hashes:
                         if isinstance(item, dict) and "filename" in item and "hash" in item:
                             file_hashes[f"videos/{item['filename']}"] = item["hash"]
+
+                # Full 30-second recordings live in videos_full/ with their own
+                # hash list; older manifests simply omit this key.
+                video_full_hashes = manifest.get("video_full_hashes", [])
+                if isinstance(video_full_hashes, list):
+                    for item in video_full_hashes:
+                        if isinstance(item, dict) and "filename" in item and "hash" in item:
+                            file_hashes[f"videos_full/{item['filename']}"] = item["hash"]
                 
                 frame_hashes = manifest.get("frame_hashes", [])
                 if isinstance(frame_hashes, list):
