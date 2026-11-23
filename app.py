@@ -1028,6 +1028,8 @@ def _render_downloaded_trips():
             label_text = trip_label or path.name
             row_label = f"{label_text} — {path.name} ({size_mb:.1f} MB, {mtime:%d %b %Y})"
             row = st.container(horizontal=True)
+            row.markdown(f"**{label_text}**")
+            row.caption(f"{path.name} · {size_mb:.1f} MB · {mtime:%d %b %Y}")
             reimport_btn = row.button("Re-import", key=f"relay_reimport_{path.name}")
             delete_btn = row.button("Delete", key=f"relay_delete_{path.name}")
 
@@ -1433,8 +1435,6 @@ else:
             "Yes" if gps_available else "No",
         )
 
-        _render_photo_forensics(selected_trip_path, image_records)
-
         st.divider()
         st.subheader("Trip Imagery Map")
 
@@ -1707,8 +1707,6 @@ else:
                     if st.button("Export"):
                         _run_share_export("full", selected_trip_path, _selected_trip_name, metadata_result.get("metadata", {}), image_records, analytics_bundle)
 
-                _render_ai_assistant()
-
         st.divider()
         st.subheader("Gallery")
         st.markdown(f"**Images:** {len(image_records)}")
@@ -1895,3 +1893,7 @@ else:
                         label = f"Open in VLC — {video_path.name}" + (f" (from {matched_frame})" if matched_frame else "")
                         if st.button(label, key=f"play_full_{video_path.name}"):
                             _open_in_vlc([video_path], "30-second recording")
+
+        _render_photo_forensics(selected_trip_path, image_records)
+
+        _render_ai_assistant()
