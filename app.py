@@ -81,7 +81,6 @@ import utils.ai_assistant as ai_assistant
 from utils.metadata_loader import load_trip_metadata
 from utils.godseye import build_dashboard_url
 from utils.map_loader import build_trip_map, extract_gps_points
-from utils.photo_forensics import ForensicReport, VERDICT_LABELS, analyze_photo, render_ela_image, scan_trip
 from utils.image_enhancer import get_enhanced_image_path
 from utils.image_loader import get_trip_images
 from utils.trip_loader import get_trip_folders
@@ -343,103 +342,6 @@ def _open_in_vlc(video_paths: list[Path], label: str = "video") -> None:
             st.info("VLC not found — opened with the system's default video player instead.")
     except OSError as exc:
         st.error(f"Could not open {label}: {exc}")
-
-
-_VERDICT_COLORS = {
-    "clean": "green",
-    "suspicious": "orange",
-    "edited": "red",
-    "no_metadata": "gray",
-}
-
-_FINDING_ICONS = {"edited": "🔴", "suspicious": "🟠", "notice": "🔵"}
-
-
-def _render_forensic_report(report: ForensicReport) -> None:
-    meta_cols = st.columns(3)
-    meta_cols[0].metric("Capture time", report.capture_time or "—")
-    meta_cols[1].metric("Camera", report.camera or "—")
-    meta_cols[2].metric("GPS", report.gps or "—")
-    if not report.findings:
-        st.markdown("No tamper indicators found.")
-    for finding in report.findings:
-        icon = _FINDING_ICONS.get(finding.level, "⚪")
-        st.markdown(f"{icon} **{finding.title}** — {finding.detail}")
-    if report.ela_score is not None:
-        st.caption(f"Recompression error level: {report.ela_score:.2f} (informational)")
-
-
-def _render_photo_forensics(trip_path: Path, image_records: list[dict]) -> None:
-    """Photo Forensics section: tamper-evidence checks for dropped-in photos
-    and for the currently selected trip."""
-    st.divider()
-    st.subheader("Photo Forensics")
-    st.caption(
-        "Tamper-evidence checks: editing-software fingerprints, EXIF thumbnail "
-        "mismatch, timestamp contradictions, stripped camera data, recompression "
-        "and GPS sanity. Findings are strong forensic hints, not mathematical proof."
-    )
-    tab_single, tab_trip = st.tabs(["Check individual photos", "Scan current trip"])
-
-    with tab_single:
-        st.caption("Drop photo(s) here — works on any photo from any device (phone, camera, WhatsApp, …).")
-        uploads = st.file_uploader(
-            "Photos to inspect",
-            type=["jpg", "jpeg", "png", "webp"],
-            accept_multiple_files=True,
-            key="forensics_uploader",
-            label_visibility="collapsed",
-        )
-        if uploads:
-            for upload in uploads:
-                report = analyze_photo(upload.getvalue(), filename=upload.name)
-                color = _VERDICT_COLORS.get(report.verdict, "gray")
-                with st.expander(
-                    f":{color}[{VERDICT_LABELS[report.verdict]}] — {upload.name}",
-                    expanded=report.verdict in {"edited", "suspicious"},
-                ):
-                    _render_forensic_report(report)
-                    ela = render_ela_image(upload.getvalue())
-                    if ela is not None:
-                        st.caption("Error-level analysis (bright zones = recompressed/edited areas):")
-                        st.image(ela, use_container_width=True)
-
-    with tab_trip:
-        photo_count = len(image_records)
-        st.caption(
-            f"Runs every tamper check on the {photo_count} photo(s) of "
-            f"**{trip_path.name}**."
-        )
-        if st.button("Scan trip photos", key="forensics_scan_trip", disabled=photo_count == 0):
-            with st.spinner("Scanning photos…"):
-                st.session_state.forensics_trip_reports = scan_trip(
-                    trip_path, [record["path"] for record in image_records]
-                )
-            log_audit_event(
-                "photo_forensics_scan",
-                f"Ran photo forensics scan on trip {trip_path.name} ({photo_count} photos)",
-            )
-        reports = st.session_state.get("forensics_trip_reports")
-        if reports:
-            edited = sum(1 for r in reports if r.verdict == "edited")
-            suspicious = sum(1 for r in reports if r.verdict == "suspicious")
-            no_meta = sum(1 for r in reports if r.verdict == "no_metadata")
-            clean = len(reports) - edited - suspicious - no_meta
-            summary_cols = st.columns(4)
-            summary_cols[0].metric("Edited", edited)
-            summary_cols[1].metric("Suspicious", suspicious)
-            summary_cols[2].metric("Clean", clean)
-            summary_cols[3].metric("No metadata", no_meta)
-            for report in reports:
-                color = _VERDICT_COLORS.get(report.verdict, "gray")
-                if report.verdict in {"edited", "suspicious"}:
-                    with st.expander(
-                        f":{color}[{VERDICT_LABELS[report.verdict]}] — {report.file}",
-                        expanded=True,
-                    ):
-                        _render_forensic_report(report)
-                else:
-                    st.markdown(f":{color}[{VERDICT_LABELS[report.verdict]}] — {report.file}")
 
 
 def _is_image_file(path: Path) -> bool:
@@ -1574,6 +1476,7 @@ else:
                 if ai_detection_enabled:
                     detection_counts = []
                     detection_labels = []
+                    detection_error = None
                     for record in image_records:
                         try:
                             detection_state = _cached_yolo_detections(str(record["path"]), _image_signature(record["path"]))
@@ -1582,7 +1485,7 @@ else:
                                 detection_counts.append(len(results))
                                 detection_labels.append(record["name"])
                         except Exception:
-                            pass
+                            detection_error = "YOLO model unavailable"
 
                     if detection_counts:
                         detection_figure = go.Figure()
@@ -1601,6 +1504,23 @@ else:
                             xaxis_tickangle=-45
                         )
                         chart_columns[1].plotly_chart(detection_figure, use_container_width=True)
+                    else:
+                        no_detection_figure = go.Figure()
+                        no_detection_figure.update_layout(
+                            title="AI Detection Results",
+                            template="plotly_dark",
+                            height=350,
+                            annotations=[dict(
+                                text="No objects detected in this trip's photos"
+                                if detection_error is None
+                                else "YOLO model unavailable — detections cannot run",
+                                xref="paper", yref="paper", x=0.5, y=0.5,
+                                showarrow=False, font=dict(size=16, color="#888888"),
+                            )],
+                            xaxis=dict(visible=False),
+                            yaxis=dict(visible=False),
+                        )
+                        chart_columns[1].plotly_chart(no_detection_figure, use_container_width=True)
 
                 analytics_notes = st.columns(4)
                 analytics_notes[0].metric("Avg interval", f"{analytics_intervals['average_seconds']:.1f} s")
@@ -1893,7 +1813,5 @@ else:
                         label = f"Open in VLC — {video_path.name}" + (f" (from {matched_frame})" if matched_frame else "")
                         if st.button(label, key=f"play_full_{video_path.name}"):
                             _open_in_vlc([video_path], "30-second recording")
-
-        _render_photo_forensics(selected_trip_path, image_records)
 
         _render_ai_assistant()
